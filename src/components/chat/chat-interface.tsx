@@ -1,27 +1,28 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Bot, User, Sparkles, FileText, Cpu, ShieldCheck, RefreshCw, ChevronRight, Layers, HelpCircle } from 'lucide-react';
+import { Send, Bot, User, Sparkles, FileText, RefreshCw, HelpCircle, ShieldCheck, CheckCircle2 } from 'lucide-react';
 import { ChatMessage, SourceCitation, RouterStrategy, LLMProviderId } from '@/types/rag';
 
 interface ChatInterfaceProps {
   routerStrategy: RouterStrategy;
-  onStrategyChange: (strategy: RouterStrategy) => void;
+  userId?: string;
+  onOpenSettings?: () => void;
 }
 
 const SUGGESTED_QUESTIONS = [
-  "What are the employee leave & PTO policies?",
-  "How does the Smart AI Router handle 429 rate limits?",
-  "Summarize the expense reimbursement guidelines.",
-  "How are vector embeddings indexed in pgvector?"
+  "Hello, how can you help my customer support team?",
+  "What is our customer support SLA & escalation process?",
+  "Summarize our product return & refund guidelines.",
+  "What services do we offer for enterprise clients?"
 ];
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, onStrategyChange }) => {
+export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, userId, onOpenSettings }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome-1',
       role: 'assistant',
-      content: 'Welcome! I am your RAG assistant powered by a Smart Multi-Provider AI Router (Groq, Gemini, OpenRouter) and Supabase pgvector. Upload documents or ask any question to get started.',
+      content: 'Hello! I am your AI Knowledge Assistant. Ask me general questions, or upload your customer support manuals, product guides, and FAQs to get instant verified answers with exact source references.',
       createdAt: new Date().toISOString(),
     }
   ]);
@@ -60,6 +61,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
         body: JSON.stringify({
           message: query,
           routerStrategy,
+          userId,
         }),
       });
 
@@ -92,22 +94,6 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
     }
   };
 
-  const getProviderBadge = (providerId?: LLMProviderId, isFallback?: boolean) => {
-    if (!providerId) return null;
-    const badgeColors: Record<LLMProviderId, string> = {
-      groq: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
-      gemini: 'bg-blue-500/10 text-blue-400 border-blue-500/30',
-      openrouter: 'bg-purple-500/10 text-purple-400 border-purple-500/30',
-    };
-
-    return (
-      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${badgeColors[providerId] || 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'}`}>
-        <Cpu className="w-3 h-3" />
-        {providerId.toUpperCase()} {isFallback ? '(Failover Active)' : ''}
-      </span>
-    );
-  };
-
   return (
     <div className="flex flex-col h-[calc(100vh-8rem)] max-w-5xl mx-auto bg-zinc-900/60 backdrop-blur-xl border border-zinc-800/80 rounded-2xl shadow-2xl overflow-hidden">
       
@@ -119,38 +105,24 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
           </div>
           <div>
             <h2 className="text-base font-semibold text-zinc-100 flex items-center gap-2">
-              Smart RAG Chat
-              <span className="px-2 py-0.5 text-[10px] uppercase font-bold tracking-wider rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                pgvector
+              Smart AI Knowledge Assistant
+              <span className="px-2.5 py-0.5 text-[10px] uppercase font-bold tracking-wider rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3" /> Verified Source Answers
               </span>
             </h2>
-            <p className="text-xs text-zinc-400">Multi-provider auto-failover (Groq, Gemini, OpenRouter)</p>
+            <p className="text-xs text-zinc-400">Ask conversational questions or inquire about uploaded company documents</p>
           </div>
         </div>
 
-        {/* Strategy Selector */}
-        <div className="flex items-center gap-2 bg-zinc-900/90 p-1 rounded-xl border border-zinc-800 text-xs">
-          <button
-            onClick={() => onStrategyChange('smart')}
-            className={`px-3 py-1.5 rounded-lg transition-all font-medium ${
-              routerStrategy === 'smart'
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            ⚡ Smart Router
-          </button>
-          <button
-            onClick={() => onStrategyChange('round-robin')}
-            className={`px-3 py-1.5 rounded-lg transition-all font-medium ${
-              routerStrategy === 'round-robin'
-                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-          >
-            🔄 Round Robin
-          </button>
-        </div>
+        {/* System Settings Button */}
+        <button
+          onClick={onOpenSettings}
+          className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-800 px-3 py-1.5 rounded-xl border border-zinc-800 text-xs text-zinc-300 transition-all cursor-pointer"
+          title="System Settings"
+        >
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="font-semibold text-indigo-400">System Ready</span>
+        </button>
       </div>
 
       {/* Messages area */}
@@ -183,7 +155,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
                   <div className="mt-4 pt-3 border-t border-zinc-700/50 space-y-2">
                     <div className="text-[11px] font-semibold text-zinc-400 uppercase tracking-wider flex items-center gap-1.5">
                       <FileText className="w-3.5 h-3.5 text-indigo-400" />
-                      Retrieved Vector Sources ({msg.citations.length})
+                      Verified Document Sources ({msg.citations.length})
                     </div>
                     <div className="flex flex-wrap gap-2">
                       {msg.citations.map((cit, idx) => (
@@ -194,7 +166,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
                         >
                           <span className="font-semibold text-indigo-400">[{idx + 1}]</span>
                           <span className="truncate max-w-[160px]">{cit.fileName}</span>
-                          <span className="text-[10px] text-zinc-400 font-mono">{(cit.similarity * 100).toFixed(0)}%</span>
+                          <span className="text-[10px] text-zinc-400 font-mono">{(cit.similarity * 100).toFixed(0)}% Match</span>
                         </button>
                       ))}
                     </div>
@@ -202,16 +174,14 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
                 )}
               </div>
 
-              {/* Message Telemetry Footer */}
+              {/* Message Footer */}
               {msg.telemetry && (
                 <div className="flex items-center gap-3 px-1 text-[11px] text-zinc-400">
-                  {getProviderBadge(msg.telemetry.providerUsed, msg.telemetry.isFallback)}
-                  <span className="flex items-center gap-1">
-                    <ClockIcon className="w-3 h-3 text-zinc-500" />
-                    {msg.telemetry.latencyMs}ms
+                  <span className="px-2 py-0.5 rounded-full bg-zinc-800 border border-zinc-700 font-mono text-[10px] text-zinc-300">
+                    {msg.telemetry.queryType === 'conversational' ? '💬 General Response' : `📚 Knowledge Verified (${msg.telemetry.retrievedChunkCount} sources)`}
                   </span>
                   <span>•</span>
-                  <span>{msg.telemetry.retrievedChunkCount} chunks retrieved</span>
+                  <span>{msg.telemetry.latencyMs}ms response time</span>
                 </div>
               )}
             </div>
@@ -227,7 +197,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
         {loading && (
           <div className="flex items-center gap-3 text-zinc-400 text-sm p-4 bg-zinc-800/40 rounded-2xl border border-zinc-800 w-fit">
             <RefreshCw className="w-4 h-4 animate-spin text-indigo-400" />
-            <span>Smart Router evaluating provider health & querying pgvector...</span>
+            <span>Searching enterprise knowledge base and generating answer...</span>
           </div>
         )}
 
@@ -265,7 +235,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask anything about your uploaded documents..."
+            placeholder="Ask a general question or inquire about your uploaded company documents..."
             className="flex-1 bg-transparent px-3 py-1.5 text-sm text-zinc-100 placeholder-zinc-500 focus:outline-none"
             disabled={loading}
           />
@@ -279,7 +249,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
         </form>
       </div>
 
-      {/* Citation Detail Modal / Drawer */}
+      {/* Citation Detail Modal */}
       {activeCitation && (
         <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="bg-zinc-900 border border-zinc-800 rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl">
@@ -297,7 +267,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
             </div>
             <div className="space-y-2 text-xs">
               <div className="flex justify-between text-zinc-400">
-                <span>Similarity Match Score:</span>
+                <span>Knowledge Match Accuracy:</span>
                 <span className="text-emerald-400 font-mono font-bold">{(activeCitation.similarity * 100).toFixed(1)}%</span>
               </div>
               <div className="bg-zinc-950 p-4 rounded-xl border border-zinc-800/80 text-zinc-200 text-sm leading-relaxed max-h-60 overflow-y-auto font-sans">
@@ -311,11 +281,3 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({ routerStrategy, on
     </div>
   );
 };
-
-function ClockIcon(props: React.SVGProps<SVGSVGElement>) {
-  return (
-    <svg {...props} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-    </svg>
-  );
-}

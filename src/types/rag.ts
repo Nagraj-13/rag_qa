@@ -1,5 +1,7 @@
 export type DocumentFileType = 'pdf' | 'docx' | 'txt' | 'md';
 
+export type DocumentCategory = 'customer_support' | 'product_guide' | 'faq' | 'tech_specs' | 'general';
+
 export interface DocumentItem {
   id: string;
   title: string;
@@ -7,6 +9,8 @@ export interface DocumentItem {
   fileType: DocumentFileType;
   fileSize: number;
   chunkCount: number;
+  category?: DocumentCategory;
+  userId?: string;
   createdAt: string;
   isAdmin?: boolean;
 }
@@ -21,6 +25,7 @@ export interface DocumentChunk {
     pageNumber?: number;
     chunkIndex?: number;
     title?: string;
+    category?: DocumentCategory;
   };
   similarity?: number;
 }
@@ -42,7 +47,7 @@ export interface ProviderHealth {
   totalRequests: number;
   successfulRequests: number;
   rateLimitHits: number;
-  estimatedCostPer1k: number; // in USD
+  estimatedCostPer1k: number;
 }
 
 export interface RouterTelemetry {
@@ -63,6 +68,7 @@ export interface SourceCitation {
   snippet: string;
   similarity: number;
   pageNumber?: number;
+  category?: DocumentCategory;
 }
 
 export interface ChatMessage {
@@ -70,6 +76,7 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: string;
   createdAt: string;
+  isConversational?: boolean;
   citations?: SourceCitation[];
   telemetry?: {
     providerUsed: LLMProviderId;
@@ -78,6 +85,7 @@ export interface ChatMessage {
     latencyMs: number;
     isFallback: boolean;
     retrievedChunkCount: number;
+    queryType: 'conversational' | 'document_rag';
   };
 }
 

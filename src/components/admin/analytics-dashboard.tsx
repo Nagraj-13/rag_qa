@@ -135,7 +135,7 @@ export const AnalyticsDashboard: React.FC = () => {
         </p>
 
         <div className="space-y-3">
-          {data?.unansweredQuestions.map((q) => (
+          {data?.unansweredQuestions?.map((q) => (
             <div key={q.id} className="p-4 rounded-xl bg-zinc-950/60 border border-zinc-800 flex items-start justify-between gap-4">
               <div className="space-y-1">
                 <p className="text-xs font-semibold text-zinc-200">{q.query}</p>

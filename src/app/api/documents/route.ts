@@ -2,16 +2,22 @@ import { NextRequest, NextResponse } from 'next/server';
 import { DocumentParser } from '@/lib/documents/parser';
 import { EmbeddingRouter } from '@/lib/embeddings/embedding-router';
 import { getSupabaseClient, localVectorStore } from '@/lib/supabase/client';
-import { DocumentItem, DocumentChunk } from '@/types/rag';
+import { DocumentItem, DocumentChunk, DocumentCategory } from '@/types/rag';
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
+    const { searchParams } = new URL(req.url);
+    const userId = searchParams.get('userId');
+
     const supabase = getSupabaseClient();
     if (supabase) {
-      const { data, error } = await supabase
-        .from('documents')
-        .select('*')
-        .order('created_at', { ascending: false });
+      let query = supabase.from('documents').select('*').order('created_at', { ascending: false });
+      
+      if (userId) {
+        query = query.or(`user_id.eq.${userId},is_admin.eq.true,user_id.is.null`);
+      }
+
+      const { data, error } = await query;
 
       if (!error && data) {
         const docs: DocumentItem[] = data.map(d => ({
@@ -21,6 +27,8 @@ export async function GET() {
           fileType: d.file_type,
           fileSize: d.file_size,
           chunkCount: d.chunk_count || 0,
+          category: d.category || 'general',
+          userId: d.user_id,
           createdAt: d.created_at,
           isAdmin: d.is_admin,
         }));
@@ -28,8 +36,8 @@ export async function GET() {
       }
     }
 
-    // Fallback local memory documents
-    return NextResponse.json({ documents: localVectorStore.getDocuments() });
+    // Fallback local memory storage
+    return NextResponse.json({ documents: localVectorStore.getDocuments(userId || undefined) });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }
@@ -39,6 +47,8 @@ export async function POST(req: NextRequest) {
   try {
     const formData = await req.formData();
     const file = formData.get('file') as File | null;
+    const category = (formData.get('category') as DocumentCategory) || 'general';
+    const userId = (formData.get('userId') as string) || undefined;
     
     if (!file) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
@@ -50,17 +60,17 @@ export async function POST(req: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // 1. Parse raw document text
+    // 1. Parse raw text
     const parsed = await DocumentParser.parseFile(buffer, fileName, fileType);
     
-    // 2. Chunk text with overlapping window
+    // 2. Chunk text
     const rawChunks = DocumentParser.chunkText(parsed.text);
     
     if (rawChunks.length === 0) {
       return NextResponse.json({ error: 'Document contains no extractable text' }, { status: 400 });
     }
 
-    const documentId = `doc-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const documentId = crypto.randomUUID();
     const nowStr = new Date().toISOString();
 
     const docItem: DocumentItem = {
@@ -70,17 +80,19 @@ export async function POST(req: NextRequest) {
       fileType: (fileName.split('.').pop()?.toLowerCase() || 'txt') as any,
       fileSize,
       chunkCount: rawChunks.length,
+      category,
+      userId,
       createdAt: nowStr,
       isAdmin: false,
     };
 
-    // 3. Generate embeddings for each chunk
+    // 3. Generate embeddings
     const chunks: DocumentChunk[] = [];
     for (let i = 0; i < rawChunks.length; i++) {
       const chunk = rawChunks[i];
       const { embedding } = await EmbeddingRouter.generateEmbedding(chunk.content);
       chunks.push({
-        id: `chunk-${documentId}-${i}`,
+        id: crypto.randomUUID(),
         documentId,
         content: chunk.content,
         embedding,
@@ -88,11 +100,12 @@ export async function POST(req: NextRequest) {
           fileName,
           title: fileName,
           chunkIndex: i,
+          category,
         },
       });
     }
 
-    // 4. Save into Supabase pgvector or Local Store
+    // 4. Save to database or vector store
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
@@ -103,6 +116,8 @@ export async function POST(req: NextRequest) {
           file_type: docItem.fileType,
           file_size: fileSize,
           chunk_count: rawChunks.length,
+          category,
+          user_id: userId || null,
           created_at: nowStr,
         });
 
@@ -118,7 +133,7 @@ export async function POST(req: NextRequest) {
           await supabase.from('document_chunks').insert(chunkInserts);
         }
       } catch (dbErr) {
-        console.warn('Supabase storage failed, using local store:', dbErr);
+        console.warn('Supabase storage failed, using dynamic local store:', dbErr);
       }
     }
 

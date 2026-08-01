@@ -1,66 +1,60 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { DocumentItem, DocumentChunk } from '@/types/rag';
 
-let supabaseClient: SupabaseClient | null = null;
+/**
+ * Server-Side Supabase Client (Service Role Key)
+ * Used in API routes for document CRUD, embedding storage, and RPC calls.
+ * This key bypasses RLS — only use in server-side code (api routes).
+ */
+let serverClient: SupabaseClient | null = null;
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-if (url && key && !url.includes('placeholder')) {
-  supabaseClient = createClient(url, key);
+if (url && serviceKey && !url.includes('placeholder') && !url.includes('your-supabase-project')) {
+  serverClient = createClient(url, serviceKey);
 }
 
 export function getSupabaseClient(): SupabaseClient | null {
-  return supabaseClient;
+  return serverClient;
 }
 
 /**
- * In-Memory Vector Store Fallback (when Supabase DB is not yet connected)
+ * Browser-Side Supabase Client (Anon/Publishable Key)
+ * Used for user-facing authentication (signUp, signIn, signOut, getUser).
+ * This key respects RLS and uses browser localStorage for session persistence.
+ * MUST only be called from client components ('use client').
  */
-class LocalVectorStore {
+let browserClient: SupabaseClient | null = null;
+
+export function getBrowserSupabaseClient(): SupabaseClient | null {
+  if (typeof window === 'undefined') return null;
+
+  if (browserClient) return browserClient;
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !anonKey || supabaseUrl.includes('placeholder') || supabaseUrl.includes('your-supabase-project')) {
+    return null;
+  }
+
+  browserClient = createClient(supabaseUrl, anonKey);
+  return browserClient;
+}
+
+/**
+ * Dynamic Memory Vector Store (Used when Supabase URL is not yet connected to external database)
+ * Operates purely on dynamic user uploads with NO hardcoded mock data.
+ */
+class DynamicVectorStore {
   private documents: Map<string, DocumentItem> = new Map();
   private chunks: DocumentChunk[] = [];
 
-  constructor() {
-    // Seed demo documents
-    const demoId = 'demo-doc-1';
-    this.documents.set(demoId, {
-      id: demoId,
-      title: 'Company_Policy_Guide_2026.pdf',
-      fileName: 'Company_Policy_Guide_2026.pdf',
-      fileType: 'pdf',
-      fileSize: 1048576,
-      chunkCount: 3,
-      createdAt: new Date().toISOString(),
-      isAdmin: true,
-    });
-
-    const sampleChunks: DocumentChunk[] = [
-      {
-        id: 'chunk-1',
-        documentId: demoId,
-        content: 'Employees are entitled to 25 days of annual leave per calendar year. Remote work requests can be submitted via the HR portal with manager approval.',
-        metadata: { fileName: 'Company_Policy_Guide_2026.pdf', pageNumber: 1, title: 'Company Policy 2026' }
-      },
-      {
-        id: 'chunk-2',
-        documentId: demoId,
-        content: 'Expense reimbursements must be claimed within 30 days of purchase. Submissions require itemized digital receipts for hardware or client meetings.',
-        metadata: { fileName: 'Company_Policy_Guide_2026.pdf', pageNumber: 2, title: 'Company Policy 2026' }
-      },
-      {
-        id: 'chunk-3',
-        documentId: demoId,
-        content: 'Our core AI routing system operates across Groq, Gemini, and OpenRouter to ensure 99.99% chatbot availability with dynamic rate-limit failovers.',
-        metadata: { fileName: 'Company_Policy_Guide_2026.pdf', pageNumber: 3, title: 'Company Policy 2026' }
-      }
-    ];
-
-    this.chunks.push(...sampleChunks);
-  }
-
-  public getDocuments(): DocumentItem[] {
-    return Array.from(this.documents.values());
+  public getDocuments(userId?: string): DocumentItem[] {
+    const all = Array.from(this.documents.values());
+    if (!userId) return all;
+    return all.filter(d => !d.userId || d.userId === userId || d.isAdmin);
   }
 
   public addDocument(doc: DocumentItem, chunks: DocumentChunk[]) {
@@ -73,16 +67,20 @@ class LocalVectorStore {
     this.chunks = this.chunks.filter(c => c.documentId !== id);
   }
 
-  public searchSimilarity(queryVector: number[], matchThreshold = 0.1, matchCount = 5): DocumentChunk[] {
+  public searchSimilarity(queryVector: number[], matchThreshold = 0.25, matchCount = 5, userId?: string): DocumentChunk[] {
     if (this.chunks.length === 0) return [];
 
-    const scored = this.chunks.map(chunk => {
+    const availableChunks = this.chunks.filter(chunk => {
+      const doc = this.documents.get(chunk.documentId);
+      if (!doc) return true;
+      if (!userId) return true;
+      return !doc.userId || doc.userId === userId || doc.isAdmin;
+    });
+
+    const scored = availableChunks.map(chunk => {
       let sim = 0;
       if (chunk.embedding && chunk.embedding.length === queryVector.length) {
         sim = this.cosineSimilarity(queryVector, chunk.embedding);
-      } else {
-        // Fallback keyword score if embedding missing
-        sim = 0.5;
       }
       return { ...chunk, similarity: sim };
     });
@@ -107,4 +105,4 @@ class LocalVectorStore {
   }
 }
 
-export const localVectorStore = new LocalVectorStore();
+export const localVectorStore = new DynamicVectorStore();

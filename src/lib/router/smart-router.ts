@@ -8,6 +8,31 @@ export interface RouteResult {
   attemptedProviders: LLMProviderId[];
 }
 
+/**
+ * Model fallback chains per provider (latest available as of 2026).
+ * When one model hits a rate limit (429) or error, the next model in the chain is tried.
+ */
+const GROQ_MODELS = [
+  'llama-3.3-70b-versatile',
+  'meta-llama/llama-4-scout-17b-16e-instruct',
+  'qwen/qwen3-32b',
+  'llama-3.1-8b-instant',
+];
+
+const GEMINI_MODELS = [
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+  'gemini-2.0-flash-lite',
+  'gemini-1.5-flash',
+];
+
+const OPENROUTER_MODELS = [
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'qwen/qwen3-32b:free',
+  'mistralai/mistral-small-3.2-24b-instruct:free',
+  'openrouter/auto',
+];
+
 class SmartAIRouter {
   private strategy: RouterStrategy = 'smart';
   private roundRobinIndex = 0;
@@ -17,7 +42,7 @@ class SmartAIRouter {
     groq: {
       id: 'groq',
       name: 'Groq (Llama 3.3 70B)',
-      model: 'llama-3.3-70b-versatile',
+      model: GROQ_MODELS[0],
       isHealthy: true,
       active: true,
       consecutiveErrors: 0,
@@ -29,8 +54,8 @@ class SmartAIRouter {
     },
     gemini: {
       id: 'gemini',
-      name: 'Google Gemini 2.0 Flash',
-      model: 'gemini-2.0-flash',
+      name: 'Google Gemini 2.5 Flash',
+      model: GEMINI_MODELS[0],
       isHealthy: true,
       active: true,
       consecutiveErrors: 0,
@@ -42,8 +67,8 @@ class SmartAIRouter {
     },
     openrouter: {
       id: 'openrouter',
-      name: 'OpenRouter (DeepSeek R1 / Mistral)',
-      model: 'deepseek/deepseek-r1-distill-llama-70b',
+      name: 'OpenRouter (Multi-Model Free)',
+      model: OPENROUTER_MODELS[0],
       isHealthy: true,
       active: true,
       consecutiveErrors: 0,
@@ -51,7 +76,7 @@ class SmartAIRouter {
       totalRequests: 0,
       successfulRequests: 0,
       rateLimitHits: 0,
-      estimatedCostPer1k: 0.0005,
+      estimatedCostPer1k: 0.0000,
     },
   };
 
@@ -80,9 +105,6 @@ class SmartAIRouter {
     }
   }
 
-  /**
-   * Determine the best provider sequence to attempt for a completion request
-   */
   public selectRouteSequence(): RouteResult {
     const now = new Date();
     const activeProviders = Object.values(this.providers).filter(p => {
@@ -90,7 +112,6 @@ class SmartAIRouter {
       return p.active && !inCooldown && p.consecutiveErrors < 3;
     });
 
-    // Fallback if all are in cooldown/error state
     const candidates = activeProviders.length > 0 ? activeProviders : Object.values(this.providers).filter(p => p.active);
     
     let primaryProvider: ProviderHealth;
@@ -101,7 +122,6 @@ class SmartAIRouter {
     } else if (this.strategy === 'priority-fallback') {
       primaryProvider = candidates[0] || this.providers.groq;
     } else {
-      // Smart Router Strategy: Sort candidates by score = (latencyWeight * avgLatency) + (costWeight * cost) - healthBonus
       const scored = [...candidates].sort((a, b) => {
         const scoreA = (a.avgLatencyMs * 0.6) + (a.estimatedCostPer1k * 1000 * 0.4) - (a.successfulRequests > 0 ? 50 : 0);
         const scoreB = (b.avgLatencyMs * 0.6) + (b.estimatedCostPer1k * 1000 * 0.4) - (b.successfulRequests > 0 ? 50 : 0);
@@ -121,9 +141,6 @@ class SmartAIRouter {
     };
   }
 
-  /**
-   * Execute LLM call with dynamic failover handling (429 Rate limits & Network Errors)
-   */
   public async executeWithFailover(
     systemPrompt: string,
     userPrompt: string,
@@ -131,7 +148,7 @@ class SmartAIRouter {
   ): Promise<{ text: string; telemetry: RouterTelemetry & { providerName: string; modelUsed: string } }> {
     const sequence = this.selectRouteSequence().attemptedProviders;
     const attempted: LLMProviderId[] = [];
-    let lastError: Error | null = null;
+    const errorsList: Array<{ provider: string; error: string }> = [];
 
     for (let i = 0; i < sequence.length; i++) {
       const providerId = sequence[i];
@@ -143,17 +160,19 @@ class SmartAIRouter {
       const startTime = Date.now();
 
       try {
-        const responseText = await this.callProviderApi(providerId, systemPrompt, userPrompt, onChunk);
+        const { text: responseText, model: modelUsed } = await this.callProviderApi(providerId, systemPrompt, userPrompt, onChunk);
         const latency = Date.now() - startTime;
 
-        // Record successful telemetry
         this.recordSuccess(providerId, latency);
+        
+        // Update the provider's display model to whichever model actually worked
+        provider.model = modelUsed;
         
         const telemetryItem: RouterTelemetry & { providerName: string; modelUsed: string } = {
           provider: providerId,
           providerName: provider.name,
-          modelUsed: provider.model,
-          model: provider.model,
+          modelUsed,
+          model: modelUsed,
           latencyMs: latency,
           success: true,
           statusCode: 200,
@@ -169,15 +188,15 @@ class SmartAIRouter {
         const latency = Date.now() - startTime;
         const statusCode = err.status || err.statusCode || (err.message?.includes('429') ? 429 : 500);
 
+        console.warn(`[SmartRouter] ${providerId.toUpperCase()} call failed (${statusCode}):`, err.message || err);
+        errorsList.push({ provider: providerId, error: err.message || 'API failed' });
+
         if (statusCode === 429) {
           this.recordRateLimit(providerId);
         } else {
           this.recordError(providerId);
         }
 
-        lastError = err;
-
-        // Log failed telemetry
         this.telemetryLogs.unshift({
           provider: providerId,
           model: provider.model,
@@ -191,15 +210,15 @@ class SmartAIRouter {
       }
     }
 
-    // High availability fallback response if all external APIs are offline or unconfigured
-    const simulatedResponse = this.generateFallbackResponse(userPrompt, systemPrompt);
+    // High availability fallback response detailing exact provider error reasons
+    const simulatedResponse = this.generateFallbackResponse(userPrompt, systemPrompt, errorsList);
     return {
       text: simulatedResponse,
       telemetry: {
         provider: 'groq',
-        providerName: 'Groq (Simulated Dynamic Fallback)',
-        modelUsed: 'llama-3.3-70b-versatile',
-        model: 'llama-3.3-70b-versatile',
+        providerName: 'Smart AI Router (API Key Diagnostic)',
+        modelUsed: GROQ_MODELS[0],
+        model: GROQ_MODELS[0],
         latencyMs: 120,
         success: true,
         statusCode: 200,
@@ -209,110 +228,211 @@ class SmartAIRouter {
     };
   }
 
+  /**
+   * Call provider API with intra-provider multi-model fallback.
+   * Each provider tries its full model chain before throwing.
+   */
   private async callProviderApi(
     providerId: LLMProviderId,
     systemPrompt: string,
     userPrompt: string,
     onChunk?: (chunk: string) => void
-  ): Promise<string> {
+  ): Promise<{ text: string; model: string }> {
     const apiKeyMap = {
       groq: process.env.GROQ_API_KEY,
       gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY,
       openrouter: process.env.OPENROUTER_API_KEY,
     };
 
-    const apiKey = apiKeyMap[providerId];
-    if (!apiKey) {
-      throw new Error(`Missing API Key for provider: ${providerId}`);
+    const rawKey = apiKeyMap[providerId];
+    if (!rawKey || rawKey.includes('your_') || rawKey.includes('placeholder')) {
+      throw new Error(`Missing or placeholder API key for ${providerId}`);
     }
 
+    const apiKey = rawKey.trim();
+
     if (providerId === 'groq') {
-      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.providers.groq.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.3,
-          max_tokens: 1500,
-        }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw { status: res.status, message: errorData.error?.message || `Groq returned status ${res.status}` };
-      }
-
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content || '';
-      if (onChunk) onChunk(content);
-      return content;
-    } 
+      return this.callGroqApi(apiKey, systemPrompt, userPrompt, onChunk);
+    }
 
     if (providerId === 'gemini') {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [{ text: `${systemPrompt}\n\nUser Question:\n${userPrompt}` }]
-            }
-          ]
-        })
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw { status: res.status, message: errorData.error?.message || `Gemini returned status ${res.status}` };
-      }
-
-      const data = await res.json();
-      const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      if (onChunk) onChunk(content);
-      return content;
+      return this.callGeminiApi(apiKey, systemPrompt, userPrompt, onChunk);
     }
 
     if (providerId === 'openrouter') {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://localhost:3000',
-          'X-Title': 'Smart RAG Router',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: this.providers.openrouter.model,
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
-          temperature: 0.3,
-          max_tokens: 1500,
-        }),
-      });
-
-      if (!res.ok) {
-        const errorData = await res.json().catch(() => ({}));
-        throw { status: res.status, message: errorData.error?.message || `OpenRouter returned status ${res.status}` };
-      }
-
-      const data = await res.json();
-      const content = data.choices?.[0]?.message?.content || '';
-      if (onChunk) onChunk(content);
-      return content;
+      return this.callOpenRouterApi(apiKey, systemPrompt, userPrompt, onChunk);
     }
 
     throw new Error(`Unsupported provider ${providerId}`);
+  }
+
+  /**
+   * Groq API — multi-model fallback chain
+   */
+  private async callGroqApi(
+    apiKey: string,
+    systemPrompt: string,
+    userPrompt: string,
+    onChunk?: (chunk: string) => void
+  ): Promise<{ text: string; model: string }> {
+    let lastError: any = null;
+
+    for (const model of GROQ_MODELS) {
+      try {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            temperature: 0.3,
+            max_tokens: 1500,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const content = data.choices?.[0]?.message?.content || '';
+          if (content) {
+            if (onChunk) onChunk(content);
+            return { text: content, model };
+          }
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          const msg = errorData.error?.message || `Groq (${model}) HTTP ${res.status}`;
+          lastError = { status: res.status, message: msg };
+          
+          // If not a rate limit error, this model is genuinely broken — try next
+          if (res.status !== 429) {
+            console.warn(`[Groq] Model ${model} returned ${res.status}: ${msg}`);
+          } else {
+            console.warn(`[Groq] Model ${model} rate limited (429), trying next model...`);
+          }
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[Groq] Model ${model} network error:`, err.message);
+      }
+    }
+
+    throw lastError || new Error('Groq API call failed across all models');
+  }
+
+  /**
+   * Gemini API — multi-model fallback chain
+   */
+  private async callGeminiApi(
+    apiKey: string,
+    systemPrompt: string,
+    userPrompt: string,
+    onChunk?: (chunk: string) => void
+  ): Promise<{ text: string; model: string }> {
+    let lastError: any = null;
+
+    for (const model of GEMINI_MODELS) {
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [{ text: `${systemPrompt}\n\nUser Question:\n${userPrompt}` }]
+              }
+            ]
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          if (content) {
+            if (onChunk) onChunk(content);
+            return { text: content, model };
+          }
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          lastError = { status: res.status, message: errorData.error?.message || `Gemini (${model}) HTTP ${res.status}` };
+          
+          if (res.status === 429) {
+            console.warn(`[Gemini] Model ${model} rate limited (429), trying next model...`);
+          } else {
+            console.warn(`[Gemini] Model ${model} returned ${res.status}: ${lastError.message}`);
+          }
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[Gemini] Model ${model} network error:`, err.message);
+      }
+    }
+
+    throw lastError || new Error('Gemini API call failed across all models');
+  }
+
+  /**
+   * OpenRouter API — multi-model fallback chain (free-tier models)
+   */
+  private async callOpenRouterApi(
+    apiKey: string,
+    systemPrompt: string,
+    userPrompt: string,
+    onChunk?: (chunk: string) => void
+  ): Promise<{ text: string; model: string }> {
+    let lastError: any = null;
+
+    for (const model of OPENROUTER_MODELS) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': 'http://localhost:3000',
+            'X-Title': 'Smart RAG Router',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: userPrompt }
+            ],
+            temperature: 0.3,
+            max_tokens: 1500,
+          }),
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const content = data.choices?.[0]?.message?.content || '';
+          if (content) {
+            if (onChunk) onChunk(content);
+            return { text: content, model };
+          }
+        } else {
+          const errorData = await res.json().catch(() => ({}));
+          lastError = { status: res.status, message: errorData.error?.message || `OpenRouter (${model}) HTTP ${res.status}` };
+          
+          if (res.status === 429) {
+            console.warn(`[OpenRouter] Model ${model} rate limited (429), trying next model...`);
+          } else {
+            console.warn(`[OpenRouter] Model ${model} returned ${res.status}: ${lastError.message}`);
+          }
+        }
+      } catch (err: any) {
+        lastError = err;
+        console.warn(`[OpenRouter] Model ${model} network error:`, err.message);
+      }
+    }
+
+    throw lastError || new Error('OpenRouter API call failed across all models');
   }
 
   private recordSuccess(providerId: LLMProviderId, latencyMs: number) {
@@ -332,7 +452,6 @@ class SmartAIRouter {
       p.totalRequests += 1;
       p.rateLimitHits += 1;
       p.consecutiveErrors += 1;
-      // 60 seconds cooldown on 429 Rate Limit
       const cooldownDate = new Date(Date.now() + 60 * 1000);
       p.cooldownUntil = cooldownDate.toISOString();
     }
@@ -350,19 +469,30 @@ class SmartAIRouter {
     return this.telemetryLogs;
   }
 
-  private generateFallbackResponse(userPrompt: string, systemPrompt: string): string {
-    const contextMatch = systemPrompt.match(/Context Documents:\n([\s\S]*?)\n\nAnswer/);
+  private generateFallbackResponse(
+    userPrompt: string,
+    systemPrompt: string,
+    errors: Array<{ provider: string; error: string }>
+  ): string {
+    const contextMatch = systemPrompt.match(/Context Documents:\n([\s\S]*?)\n\nInstructions/);
     const context = contextMatch ? contextMatch[1] : '';
 
+    let errorDetails = errors.map(e => `• **${e.provider.toUpperCase()}**: ${e.error}`).join('\n');
+    if (!errorDetails) errorDetails = '• All API keys are missing or invalid in `.env.local`';
+
     if (context && context.trim().length > 10) {
-      return `Based on the provided documents:\n\n${context.slice(0, 450)}...\n\n*Note: Output synthesized via RAG Fallback engine. Provide LLM API keys in settings to enable live multi-provider model streaming.*`;
+      return `**Retrieved Knowledge Base Context:**\n\n${context.slice(0, 450)}...\n\n---\n⚠️ **Provider Diagnostic Notice**:\n${errorDetails}\n\n*Check your API key in \`.env.local\` to activate live streaming from Groq, Gemini, or OpenRouter.*`;
     }
 
-    return `I received your question: "${userPrompt}".
+    return `I received your query: "${userPrompt}".
 
-I searched your knowledge base documents using semantic similarity search. To get live AI answers from Groq, Gemini, or OpenRouter, add your API keys to the system settings or \`.env.local\` file.
+⚠️ **Smart Router API Key Diagnostic**:
+${errorDetails}
 
-**Smart Router Status**: All routing logic, fallback chains, and pgvector document search pipelines are fully active!`;
+**How to Fix**:
+1. Check your API key in \`.env.local\` (e.g. \`GROQ_API_KEY\`, \`GEMINI_API_KEY\`, or \`OPENROUTER_API_KEY\`).
+2. Restart your dev server (\`npm run dev\`) or update setting keys.
+3. Live streaming from Groq, Gemini 2.5/2.0 Flash, and OpenRouter free models will be active!`;
   }
 }
 
