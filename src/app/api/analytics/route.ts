@@ -26,6 +26,12 @@ export async function GET() {
         stats.status = p.cooldownUntil && new Date(p.cooldownUntil) > new Date()
           ? 'cooldown'
           : p.isHealthy ? 'healthy' : 'degraded';
+        stats.models = p.models?.map(m => ({
+          model: m.model,
+          rateLimitHits: m.rateLimitHits,
+          isHealthy: m.isHealthy,
+          inCooldown: Boolean(m.cooldownUntil && new Date(m.cooldownUntil) > new Date()),
+        }));
       }
     });
 

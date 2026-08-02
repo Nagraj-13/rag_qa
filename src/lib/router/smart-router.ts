@@ -1,4 +1,4 @@
-import { LLMProviderId, ProviderHealth, RouterStrategy, RouterTelemetry } from '@/types/rag';
+import { LLMProviderId, ModelHealth, ProviderHealth, RouterStrategy, RouterTelemetry, KnowledgeMode } from '@/types/rag';
 
 export interface RouteResult {
   provider: LLMProviderId;
@@ -9,39 +9,68 @@ export interface RouteResult {
 }
 
 /**
- * Model fallback chains per provider (latest available as of 2026).
- * When one model hits a rate limit (429) or error, the next model in the chain is tried.
+ * Model fallback chains per provider.
+ * When one model hits a rate limit (429/quota error) or fails, the router switches to the next model.
+ * In round-robin mode, requests cycle through available models for even load distribution.
+ * In smart mode, requests prioritize the healthiest, lowest-latency, non-cooldown model.
  */
-const GROQ_MODELS = [
+export const GROQ_MODELS = [
   'llama-3.3-70b-versatile',
   'meta-llama/llama-4-scout-17b-16e-instruct',
   'qwen/qwen3-32b',
   'llama-3.1-8b-instant',
+  'mixtral-8x7b-32768',
 ];
 
-const GEMINI_MODELS = [
+export const GEMINI_MODELS = [
   'gemini-2.5-flash',
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
   'gemini-1.5-flash',
+  'gemini-1.5-pro',
 ];
 
-const OPENROUTER_MODELS = [
+export const OPENROUTER_MODELS = [
   'meta-llama/llama-3.3-70b-instruct:free',
   'qwen/qwen3-32b:free',
   'mistralai/mistral-small-3.2-24b-instruct:free',
+  'google/gemini-2.0-flash-lite-preview-02-05:free',
+  'deepseek/deepseek-r1:free',
   'openrouter/auto',
 ];
 
+function isRateLimitError(status: number, message: string = ''): boolean {
+  if (status === 429) return true;
+  const msg = message.toLowerCase();
+  return (
+    msg.includes('429') ||
+    msg.includes('rate limit') ||
+    msg.includes('ratelimit') ||
+    msg.includes('quota') ||
+    msg.includes('resource_exhausted') ||
+    msg.includes('too many requests') ||
+    msg.includes('tps') ||
+    msg.includes('tpm') ||
+    msg.includes('rpm')
+  );
+}
+
 class SmartAIRouter {
   private strategy: RouterStrategy = 'smart';
+  private knowledgeMode: KnowledgeMode = 'okf';
   private roundRobinIndex = 0;
+  private providerModelRRIndex: Record<LLMProviderId, number> = {
+    groq: 0,
+    gemini: 0,
+    openrouter: 0,
+  };
   private telemetryLogs: RouterTelemetry[] = [];
-  
+  private modelStates: Record<string, ModelHealth> = {};
+
   private providers: Record<LLMProviderId, ProviderHealth> = {
     groq: {
       id: 'groq',
-      name: 'Groq (Llama 3.3 70B)',
+      name: 'Groq (Llama 3.3 70B & Scout)',
       model: GROQ_MODELS[0],
       isHealthy: true,
       active: true,
@@ -54,7 +83,7 @@ class SmartAIRouter {
     },
     gemini: {
       id: 'gemini',
-      name: 'Google Gemini 2.5 Flash',
+      name: 'Google Gemini (2.5 & 2.0 Flash)',
       model: GEMINI_MODELS[0],
       isHealthy: true,
       active: true,
@@ -67,7 +96,7 @@ class SmartAIRouter {
     },
     openrouter: {
       id: 'openrouter',
-      name: 'OpenRouter (Multi-Model Free)',
+      name: 'OpenRouter (Multi-Model Free Tier)',
       model: OPENROUTER_MODELS[0],
       isHealthy: true,
       active: true,
@@ -80,6 +109,43 @@ class SmartAIRouter {
     },
   };
 
+  constructor() {
+    this.initModelStates();
+  }
+
+  public setKnowledgeMode(mode: KnowledgeMode) {
+    this.knowledgeMode = mode;
+  }
+
+  public getKnowledgeMode(): KnowledgeMode {
+    return this.knowledgeMode;
+  }
+
+  private initModelStates() {
+    const allProviders: Record<LLMProviderId, string[]> = {
+      groq: GROQ_MODELS,
+      gemini: GEMINI_MODELS,
+      openrouter: OPENROUTER_MODELS,
+    };
+
+    for (const [providerId, models] of Object.entries(allProviders) as [LLMProviderId, string[]][]) {
+      for (const model of models) {
+        if (!this.modelStates[model]) {
+          this.modelStates[model] = {
+            model,
+            provider: providerId,
+            isHealthy: true,
+            consecutiveErrors: 0,
+            rateLimitHits: 0,
+            totalRequests: 0,
+            successfulRequests: 0,
+            avgLatencyMs: 300,
+          };
+        }
+      }
+    }
+  }
+
   public setStrategy(strategy: RouterStrategy) {
     this.strategy = strategy;
   }
@@ -88,21 +154,73 @@ class SmartAIRouter {
     return this.strategy;
   }
 
-  public getProviderStates(): ProviderHealth[] {
+  public getProviderStates(): (ProviderHealth & { models: ModelHealth[] })[] {
     const now = new Date();
     return Object.values(this.providers).map(p => {
       const inCooldown = p.cooldownUntil && new Date(p.cooldownUntil) > now;
+      const providerModels = Object.values(this.modelStates).filter(m => m.provider === p.id);
       return {
         ...p,
         isHealthy: !inCooldown && p.consecutiveErrors < 3 && p.active,
+        models: providerModels,
       };
     });
+  }
+
+  public getModelStates(): Record<string, ModelHealth> {
+    return this.modelStates;
   }
 
   public toggleProviderActive(providerId: LLMProviderId, active: boolean) {
     if (this.providers[providerId]) {
       this.providers[providerId].active = active;
     }
+  }
+
+  /**
+   * Selects candidate models for a provider based on active strategy (smart vs round-robin vs priority-fallback)
+   * and filters out models currently on 429 rate-limit cooldown.
+   */
+  public selectModelSequenceForProvider(providerId: LLMProviderId): string[] {
+    const models = providerId === 'groq' ? GROQ_MODELS :
+                   providerId === 'gemini' ? GEMINI_MODELS :
+                   OPENROUTER_MODELS;
+
+    const now = new Date();
+    const available = models.filter(m => {
+      const state = this.modelStates[m];
+      if (!state) return true;
+      const inCooldown = state.cooldownUntil && new Date(state.cooldownUntil) > now;
+      return !inCooldown;
+    });
+
+    const pool = available.length > 0 ? available : models;
+
+    if (this.strategy === 'round-robin') {
+      const startIdx = this.providerModelRRIndex[providerId] % pool.length;
+      this.providerModelRRIndex[providerId] = (this.providerModelRRIndex[providerId] + 1) % pool.length;
+      const rotated = [...pool.slice(startIdx), ...pool.slice(0, startIdx)];
+      const cooldownModels = models.filter(m => !rotated.includes(m));
+      return [...rotated, ...cooldownModels];
+    }
+
+    if (this.strategy === 'priority-fallback') {
+      const cooldownModels = models.filter(m => !pool.includes(m));
+      return [...pool, ...cooldownModels];
+    }
+
+    // 'smart' strategy: sort by health score (fewest rate limit hits, low latency, low errors)
+    const sorted = [...pool].sort((a, b) => {
+      const stateA = this.modelStates[a];
+      const stateB = this.modelStates[b];
+      if (!stateA || !stateB) return 0;
+      const scoreA = (stateA.avgLatencyMs * 0.4) + (stateA.rateLimitHits * 200) + (stateA.consecutiveErrors * 100);
+      const scoreB = (stateB.avgLatencyMs * 0.4) + (stateB.rateLimitHits * 200) + (stateB.consecutiveErrors * 100);
+      return scoreA - scoreB;
+    });
+
+    const cooldownModels = models.filter(m => !sorted.includes(m));
+    return [...sorted, ...cooldownModels];
   }
 
   public selectRouteSequence(): RouteResult {
@@ -165,7 +283,6 @@ class SmartAIRouter {
 
         this.recordSuccess(providerId, latency);
         
-        // Update the provider's display model to whichever model actually worked
         provider.model = modelUsed;
         
         const telemetryItem: RouterTelemetry & { providerName: string; modelUsed: string } = {
@@ -186,12 +303,12 @@ class SmartAIRouter {
         return { text: responseText, telemetry: telemetryItem };
       } catch (err: any) {
         const latency = Date.now() - startTime;
-        const statusCode = err.status || err.statusCode || (err.message?.includes('429') ? 429 : 500);
+        const statusCode = err.status || err.statusCode || (isRateLimitError(0, err.message) ? 429 : 500);
 
         console.warn(`[SmartRouter] ${providerId.toUpperCase()} call failed (${statusCode}):`, err.message || err);
         errorsList.push({ provider: providerId, error: err.message || 'API failed' });
 
-        if (statusCode === 429) {
+        if (statusCode === 429 || isRateLimitError(statusCode, err.message)) {
           this.recordRateLimit(providerId);
         } else {
           this.recordError(providerId);
@@ -228,10 +345,6 @@ class SmartAIRouter {
     };
   }
 
-  /**
-   * Call provider API with intra-provider multi-model fallback.
-   * Each provider tries its full model chain before throwing.
-   */
   private async callProviderApi(
     providerId: LLMProviderId,
     systemPrompt: string,
@@ -267,7 +380,7 @@ class SmartAIRouter {
   }
 
   /**
-   * Groq API — multi-model fallback chain
+   * Groq API — multi-model fallback chain & round-robin / smart model selection
    */
   private async callGroqApi(
     apiKey: string,
@@ -275,9 +388,11 @@ class SmartAIRouter {
     userPrompt: string,
     onChunk?: (chunk: string) => void
   ): Promise<{ text: string; model: string }> {
+    const modelSequence = this.selectModelSequenceForProvider('groq');
     let lastError: any = null;
 
-    for (const model of GROQ_MODELS) {
+    for (const model of modelSequence) {
+      const startTime = Date.now();
       try {
         const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
@@ -296,36 +411,42 @@ class SmartAIRouter {
           }),
         });
 
+        const latency = Date.now() - startTime;
+
         if (res.ok) {
           const data = await res.json();
           const content = data.choices?.[0]?.message?.content || '';
           if (content) {
             if (onChunk) onChunk(content);
+            this.recordModelSuccess('groq', model, latency);
             return { text: content, model };
           }
+        }
+
+        const errorData = await res.json().catch(() => ({}));
+        const msg = errorData.error?.message || `Groq (${model}) HTTP ${res.status}`;
+        const statusCode = res.status;
+        lastError = { status: statusCode, message: msg };
+        
+        if (isRateLimitError(statusCode, msg)) {
+          this.recordModelRateLimit('groq', model);
+          console.warn(`[Groq] Model "${model}" rate limited (429/Quota). Trying next model in sequence...`);
         } else {
-          const errorData = await res.json().catch(() => ({}));
-          const msg = errorData.error?.message || `Groq (${model}) HTTP ${res.status}`;
-          lastError = { status: res.status, message: msg };
-          
-          // If not a rate limit error, this model is genuinely broken — try next
-          if (res.status !== 429) {
-            console.warn(`[Groq] Model ${model} returned ${res.status}: ${msg}`);
-          } else {
-            console.warn(`[Groq] Model ${model} rate limited (429), trying next model...`);
-          }
+          this.recordModelError('groq', model);
+          console.warn(`[Groq] Model "${model}" returned ${statusCode}: ${msg}. Trying next model...`);
         }
       } catch (err: any) {
         lastError = err;
-        console.warn(`[Groq] Model ${model} network error:`, err.message);
+        this.recordModelError('groq', model);
+        console.warn(`[Groq] Model "${model}" network error:`, err.message);
       }
     }
 
-    throw lastError || new Error('Groq API call failed across all models');
+    throw lastError || new Error(`Groq API failed across all models (${modelSequence.join(', ')})`);
   }
 
   /**
-   * Gemini API — multi-model fallback chain
+   * Gemini API — multi-model fallback chain & round-robin / smart model selection
    */
   private async callGeminiApi(
     apiKey: string,
@@ -333,9 +454,11 @@ class SmartAIRouter {
     userPrompt: string,
     onChunk?: (chunk: string) => void
   ): Promise<{ text: string; model: string }> {
+    const modelSequence = this.selectModelSequenceForProvider('gemini');
     let lastError: any = null;
 
-    for (const model of GEMINI_MODELS) {
+    for (const model of modelSequence) {
+      const startTime = Date.now();
       try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
         const res = await fetch(url, {
@@ -351,34 +474,42 @@ class SmartAIRouter {
           })
         });
 
+        const latency = Date.now() - startTime;
+
         if (res.ok) {
           const data = await res.json();
           const content = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
           if (content) {
             if (onChunk) onChunk(content);
+            this.recordModelSuccess('gemini', model, latency);
             return { text: content, model };
           }
+        }
+
+        const errorData = await res.json().catch(() => ({}));
+        const msg = errorData.error?.message || `Gemini (${model}) HTTP ${res.status}`;
+        const statusCode = res.status;
+        lastError = { status: statusCode, message: msg };
+        
+        if (isRateLimitError(statusCode, msg)) {
+          this.recordModelRateLimit('gemini', model);
+          console.warn(`[Gemini] Model "${model}" rate limited (429/Quota). Trying next model in sequence...`);
         } else {
-          const errorData = await res.json().catch(() => ({}));
-          lastError = { status: res.status, message: errorData.error?.message || `Gemini (${model}) HTTP ${res.status}` };
-          
-          if (res.status === 429) {
-            console.warn(`[Gemini] Model ${model} rate limited (429), trying next model...`);
-          } else {
-            console.warn(`[Gemini] Model ${model} returned ${res.status}: ${lastError.message}`);
-          }
+          this.recordModelError('gemini', model);
+          console.warn(`[Gemini] Model "${model}" returned ${statusCode}: ${msg}. Trying next model...`);
         }
       } catch (err: any) {
         lastError = err;
-        console.warn(`[Gemini] Model ${model} network error:`, err.message);
+        this.recordModelError('gemini', model);
+        console.warn(`[Gemini] Model "${model}" network error:`, err.message);
       }
     }
 
-    throw lastError || new Error('Gemini API call failed across all models');
+    throw lastError || new Error(`Gemini API failed across all models (${modelSequence.join(', ')})`);
   }
 
   /**
-   * OpenRouter API — multi-model fallback chain (free-tier models)
+   * OpenRouter API — multi-model fallback chain & round-robin / smart model selection
    */
   private async callOpenRouterApi(
     apiKey: string,
@@ -386,9 +517,11 @@ class SmartAIRouter {
     userPrompt: string,
     onChunk?: (chunk: string) => void
   ): Promise<{ text: string; model: string }> {
+    const modelSequence = this.selectModelSequenceForProvider('openrouter');
     let lastError: any = null;
 
-    for (const model of OPENROUTER_MODELS) {
+    for (const model of modelSequence) {
+      const startTime = Date.now();
       try {
         const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
           method: 'POST',
@@ -409,30 +542,73 @@ class SmartAIRouter {
           }),
         });
 
+        const latency = Date.now() - startTime;
+
         if (res.ok) {
           const data = await res.json();
           const content = data.choices?.[0]?.message?.content || '';
           if (content) {
             if (onChunk) onChunk(content);
+            this.recordModelSuccess('openrouter', model, latency);
             return { text: content, model };
           }
+        }
+
+        const errorData = await res.json().catch(() => ({}));
+        const msg = errorData.error?.message || `OpenRouter (${model}) HTTP ${res.status}`;
+        const statusCode = res.status;
+        lastError = { status: statusCode, message: msg };
+        
+        if (isRateLimitError(statusCode, msg)) {
+          this.recordModelRateLimit('openrouter', model);
+          console.warn(`[OpenRouter] Model "${model}" rate limited (429/Quota). Trying next model in sequence...`);
         } else {
-          const errorData = await res.json().catch(() => ({}));
-          lastError = { status: res.status, message: errorData.error?.message || `OpenRouter (${model}) HTTP ${res.status}` };
-          
-          if (res.status === 429) {
-            console.warn(`[OpenRouter] Model ${model} rate limited (429), trying next model...`);
-          } else {
-            console.warn(`[OpenRouter] Model ${model} returned ${res.status}: ${lastError.message}`);
-          }
+          this.recordModelError('openrouter', model);
+          console.warn(`[OpenRouter] Model "${model}" returned ${statusCode}: ${msg}. Trying next model...`);
         }
       } catch (err: any) {
         lastError = err;
-        console.warn(`[OpenRouter] Model ${model} network error:`, err.message);
+        this.recordModelError('openrouter', model);
+        console.warn(`[OpenRouter] Model "${model}" network error:`, err.message);
       }
     }
 
-    throw lastError || new Error('OpenRouter API call failed across all models');
+    throw lastError || new Error(`OpenRouter API failed across all models (${modelSequence.join(', ')})`);
+  }
+
+  private recordModelSuccess(providerId: LLMProviderId, model: string, latencyMs: number) {
+    const m = this.modelStates[model];
+    if (m) {
+      m.totalRequests += 1;
+      m.successfulRequests += 1;
+      m.consecutiveErrors = 0;
+      m.avgLatencyMs = Math.round((m.avgLatencyMs * 0.7) + (latencyMs * 0.3));
+      m.lastUsedAt = new Date().toISOString();
+      m.cooldownUntil = undefined;
+      m.isHealthy = true;
+    }
+  }
+
+  private recordModelRateLimit(providerId: LLMProviderId, model: string) {
+    const m = this.modelStates[model];
+    if (m) {
+      m.totalRequests += 1;
+      m.rateLimitHits += 1;
+      m.consecutiveErrors += 1;
+      m.cooldownUntil = new Date(Date.now() + 60 * 1000).toISOString();
+      m.isHealthy = false;
+    }
+  }
+
+  private recordModelError(providerId: LLMProviderId, model: string) {
+    const m = this.modelStates[model];
+    if (m) {
+      m.totalRequests += 1;
+      m.consecutiveErrors += 1;
+      if (m.consecutiveErrors >= 3) {
+        m.isHealthy = false;
+      }
+    }
   }
 
   private recordSuccess(providerId: LLMProviderId, latencyMs: number) {

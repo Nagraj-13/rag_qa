@@ -3,56 +3,85 @@ import { EmbeddingRouter } from '@/lib/embeddings/embedding-router';
 import { getSupabaseClient, localVectorStore } from '@/lib/supabase/client';
 import { smartRouter } from '@/lib/router/smart-router';
 import { SourceCitation } from '@/types/rag';
+import { OpenKnowledgeEngine } from '@/lib/wiki/open-knowledge';
 
-/**
- * Detect if a user prompt is a basic conversational query (greetings, general Q&A)
- * or requires deep document vector retrieval.
- */
-function isBasicConversationalQuery(text: string): boolean {
+const SUPPORT_SCOPE_KEYWORDS = [
+  'support', 'help', 'issue', 'problem', 'refund', 'billing', 'invoice', 'payment',
+  'subscription', 'cancel', 'return', 'warranty', 'replace', 'broken', 'defective',
+  'sla', 'escalation', 'ticket', 'complaint', 'contact', 'hours', 'availability',
+  'account', 'password', 'login', 'sign in', 'reset', 'access', 'error', 'bug',
+  'shipping', 'delivery', 'order', 'tracking', 'product', 'plan', 'pricing',
+  'upgrade', 'downgrade', 'trial', 'feature', 'policy', 'privacy', 'terms',
+  'data', 'gdpr', 'security', 'outage', 'status', 'maintenance', 'api',
+  'integration', 'setup', 'install', 'configure', 'documentation', 'guide',
+  'faq', 'how to', 'how do', 'can i', 'what is', 'where', 'when', 'who',
+];
+
+function isBasicGreeting(text: string): boolean {
   const clean = text.trim().toLowerCase();
-  
-  // Very short phrases or common greetings
-  const basicPhrases = [
+  const greetings = [
     'hi', 'hello', 'hey', 'greetings', 'good morning', 'good afternoon', 'good evening',
-    'how are you', 'how are you doing', 'who are you', 'what can you do', 'what is your name',
-    'help', 'thanks', 'thank you', 'ok', 'okay', 'cool', 'awesome', 'tell me a joke',
-    'what is 2+2', 'what is 2 + 2', 'who created you'
+    'how are you', 'thanks', 'thank you', 'ok', 'okay', 'cool', 'awesome',
   ];
-
-  if (basicPhrases.includes(clean)) return true;
-  if (clean.length < 8 && !clean.includes('pdf') && !clean.includes('doc')) return true;
-
-  // Pattern matching for general conversational questions
-  const conversationalRegex = /^(hi|hello|hey|greetings|who are you|what can you do|how are you|tell me a joke|what is the capital of|who is the president of)/i;
-  return conversationalRegex.test(clean);
+  if (greetings.includes(clean)) return true;
+  if (clean.length < 6) return true;
+  return /^(hi|hello|hey|greetings|how are you)/i.test(clean);
 }
+
+function isSupportRelated(text: string): boolean {
+  const lower = text.toLowerCase();
+  // If it contains any support-related keyword, it's in scope
+  return SUPPORT_SCOPE_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+const OFF_TOPIC_RESPONSE = `I'm a customer support assistant, so I can only help with questions about our products, services, billing, refunds, account access, and technical support.
+
+Here are some things I can help with:
+- **Billing & Refunds** — subscription plans, charges, refund requests
+- **Account Access** — login issues, password resets
+- **Product Support** — setup guides, troubleshooting
+- **Returns & Warranty** — return policies, replacement requests
+- **SLA & Escalation** — support response times, escalation process
+
+Please try asking a support-related question!`;
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const { message, history = [], routerStrategy, userId } = body;
+    const { message, userId } = body;
 
     if (!message || typeof message !== 'string') {
-      return NextResponse.json({ error: 'Message string is required' }, { status: 400 });
+      return NextResponse.json({ error: 'Message is required' }, { status: 400 });
     }
 
-    if (routerStrategy) {
-      smartRouter.setStrategy(routerStrategy);
-    }
+    // Fetch current system settings (admin-configured)
+    let knowledgeMode = 'okf';
+    let routerStrategy = 'smart';
+    try {
+      const settingsRes = await fetch(new URL('/api/settings', req.url).toString());
+      if (settingsRes.ok) {
+        const settings = await settingsRes.json();
+        knowledgeMode = settings.knowledgeMode || 'okf';
+        routerStrategy = settings.routerStrategy || 'smart';
+      }
+    } catch { /* use defaults */ }
 
-    const isConversational = isBasicConversationalQuery(message);
+    smartRouter.setStrategy(routerStrategy as any);
+    smartRouter.setKnowledgeMode(knowledgeMode as any);
 
-    // If query is basic conversational, answer directly via Smart AI Router
-    if (isConversational) {
-      const systemPrompt = `You are an intelligent, friendly AI assistant.
-Answer the user's general conversational input clearly, politely, and concisely.
-If the user asks what you can do, mention that you can also answer questions based on uploaded documents (Customer Support guides, FAQs, product manuals, etc.) using your Smart AI Router & pgvector database.`;
+    // Basic greetings — respond as a support agent
+    if (isBasicGreeting(message)) {
+      const systemPrompt = `You are a friendly customer support assistant for a company.
+Respond to the user's greeting warmly and briefly. Introduce yourself as a support assistant.
+Let them know you can help with billing, refunds, account issues, product support, returns, and technical troubleshooting.
+Keep it to 2-3 sentences max. Use Markdown formatting.`;
 
-      const { text: answerText, telemetry } = await smartRouter.executeWithFailover(systemPrompt, message);
+      const { text: rawAnswer, telemetry } = await smartRouter.executeWithFailover(systemPrompt, message);
 
       return NextResponse.json({
-        answer: answerText,
+        answer: rawAnswer,
         citations: [],
+        webReferences: [],
         telemetry: {
           providerUsed: telemetry.provider,
           providerName: telemetry.providerName,
@@ -65,8 +94,27 @@ If the user asks what you can do, mention that you can also answer questions bas
       });
     }
 
-    // Knowledge Search Query: Generate embedding and search pgvector
-    const { embedding: queryEmbedding, providerUsed: embedProvider } = await EmbeddingRouter.generateEmbedding(message);
+    // Check if query is support-related — if not, refuse politely
+    if (!isSupportRelated(message)) {
+      return NextResponse.json({
+        answer: OFF_TOPIC_RESPONSE,
+        citations: [],
+        webReferences: [],
+        telemetry: {
+          providerUsed: 'system' as any,
+          providerName: 'Support Guard',
+          modelUsed: 'content-filter',
+          latencyMs: 5,
+          isFallback: false,
+          retrievedChunkCount: 0,
+          queryType: 'off_topic',
+        },
+      });
+    }
+
+    // --- RAG Pipeline: Embed query, search vector store, generate answer ---
+
+    const { embedding: queryEmbedding } = await EmbeddingRouter.generateEmbedding(message);
 
     let retrievedChunks: Array<{
       id: string;
@@ -96,7 +144,7 @@ If the user asks what you can do, mention that you can also answer questions bas
           }));
         }
       } catch (dbErr) {
-        console.warn('Supabase match_documents error, using dynamic memory vector store fallback:', dbErr);
+        console.warn('Supabase vector search error, using local fallback:', dbErr);
       }
     }
 
@@ -111,7 +159,7 @@ If the user asks what you can do, mention that you can also answer questions bas
       }));
     }
 
-    // Build Citations
+    // Build citations
     const citations: SourceCitation[] = retrievedChunks.map((chunk, idx) => ({
       id: chunk.id || `cit-${idx}`,
       documentId: chunk.documentId,
@@ -122,26 +170,45 @@ If the user asks what you can do, mention that you can also answer questions bas
       category: chunk.metadata?.category,
     }));
 
-    // If chunks are found, perform RAG
+    // If chunks found — generate RAG answer
     if (retrievedChunks.length > 0) {
-      const contextText = retrievedChunks.map((c, i) => `[Source ${i + 1}: ${c.metadata?.fileName || 'Doc'} (${c.metadata?.category || 'General'})\n${c.content}`).join('\n\n');
+      const contextText = retrievedChunks.map((c, i) => `[Source ${i + 1}: ${c.metadata?.fileName || 'Document'}]\n${c.content}`).join('\n\n');
 
-      const systemPrompt = `You are a specialized RAG AI assistant.
-Answer the user's question accurately using the provided document context chunks below (e.g. Customer Support, Technical Guides, Product Manuals).
+      const isOKF = knowledgeMode === 'okf';
+
+      const systemPrompt = isOKF
+        ? `You are a customer support assistant. Answer the customer's question accurately using the provided internal documents.
 
 Context Documents:
 ${contextText}
 
 Instructions:
-1. Provide a direct, well-structured, and helpful answer based on the context.
-2. If the user asks about something mentioned in the documents, cite the relevant information clearly.
-3. If the context does not fully answer the question, state what is known from the context and supplement with general AI knowledge politely.`;
+1. Answer ONLY based on the provided context. If the context doesn't contain the answer, say so.
+2. Be helpful, professional, and empathetic.
+3. Format your response in clear Markdown with structured sections if needed.
+4. Do NOT mention internal systems, vector databases, AI models, or technical architecture.
+5. Speak as a knowledgeable support agent, not a robot.`
+        : `You are a customer support assistant. Answer the customer's question using the provided documents.
 
-      const { text: answerText, telemetry } = await smartRouter.executeWithFailover(systemPrompt, message);
+Context Documents:
+${contextText}
+
+Instructions:
+1. Provide a direct, helpful answer based on the context.
+2. Be concise and professional.
+3. Format in Markdown.
+4. Do NOT mention technical systems or AI architecture.`;
+
+      const { text: rawAnswer, telemetry } = await smartRouter.executeWithFailover(systemPrompt, message);
+
+      const { formattedAnswer, webReferences } = isOKF
+        ? OpenKnowledgeEngine.formatOpenKnowledgeWiki(rawAnswer, message, citations)
+        : { formattedAnswer: rawAnswer, webReferences: [] };
 
       return NextResponse.json({
-        answer: answerText,
+        answer: formattedAnswer,
         citations,
+        webReferences: isOKF ? webReferences : [],
         telemetry: {
           providerUsed: telemetry.provider,
           providerName: telemetry.providerName,
@@ -154,25 +221,26 @@ Instructions:
       });
     }
 
-    // No document chunks matched: politely decline — only answer from knowledge base
+    // No matching documents — polite fallback
     return NextResponse.json({
-      answer: "I'm sorry, I don't have information about that in my knowledge base yet. Please upload relevant documents (such as customer support manuals, product guides, or FAQs) to the Knowledge Base, and I'll be able to answer your question accurately with verified source citations.",
+      answer: `I wasn't able to find specific information about that in our support knowledge base. Here's what you can try:\n\n- **Rephrase your question** with more specific terms\n- **Contact our support team** directly for personalized help\n- **Check our FAQ section** for common questions\n\nIs there anything else I can help you with?`,
       citations: [],
+      webReferences: [],
       telemetry: {
-        providerUsed: 'groq' as const,
+        providerUsed: 'system' as any,
         providerName: 'Knowledge Base',
-        modelUsed: 'none',
-        latencyMs: 0,
+        modelUsed: 'fallback',
+        latencyMs: 10,
         isFallback: false,
         retrievedChunkCount: 0,
-        queryType: 'document_rag' as const,
+        queryType: 'no_match',
       },
     });
 
   } catch (error: any) {
     console.error('Chat endpoint error:', error);
     return NextResponse.json({
-      error: error.message || 'Internal server error in RAG pipeline',
+      error: error.message || 'Something went wrong. Please try again.',
     }, { status: 500 });
   }
 }

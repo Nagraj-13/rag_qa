@@ -1,8 +1,22 @@
 import { getBrowserSupabaseClient } from './client';
 
+export type UserRole = 'admin' | 'user';
+
 export interface UserProfile {
   id: string;
   email: string;
+  role: UserRole;
+}
+
+function resolveRole(email: string): UserRole {
+  const configuredAdminEmail = (
+    process.env.NEXT_PUBLIC_ADMIN_EMAIL ||
+    process.env.ADMIN_EMAIL ||
+    'admin@email.com'
+  ).toLowerCase();
+
+  if (email.toLowerCase() === configuredAdminEmail) return 'admin';
+  return 'user';
 }
 
 export async function getCurrentUser(): Promise<UserProfile | null> {
@@ -12,7 +26,7 @@ export async function getCurrentUser(): Promise<UserProfile | null> {
   try {
     const { data: { user } } = await supabase.auth.getUser();
     if (user && user.email) {
-      return { id: user.id, email: user.email };
+      return { id: user.id, email: user.email, role: resolveRole(user.email) };
     }
   } catch (err) {
     console.warn('Failed to fetch auth user:', err);
@@ -38,7 +52,7 @@ export async function signUpWithEmail(email: string, password: string): Promise<
 
   // If session exists, user is auto-confirmed (email confirmation disabled in Supabase)
   if (data.session && data.user && data.user.email) {
-    return { user: { id: data.user.id, email: data.user.email } };
+    return { user: { id: data.user.id, email: data.user.email, role: resolveRole(data.user.email) } };
   }
 
   // If user exists but no session (email confirmation still enabled on Supabase dashboard),
@@ -46,10 +60,10 @@ export async function signUpWithEmail(email: string, password: string): Promise<
   if (data.user && data.user.email) {
     const signInResult = await supabase.auth.signInWithPassword({ email, password });
     if (signInResult.data?.user?.email) {
-      return { user: { id: signInResult.data.user.id, email: signInResult.data.user.email } };
+      return { user: { id: signInResult.data.user.id, email: signInResult.data.user.email, role: resolveRole(signInResult.data.user.email) } };
     }
     // If auto-sign-in also failed, return the user anyway (they were created)
-    return { user: { id: data.user.id, email: data.user.email } };
+    return { user: { id: data.user.id, email: data.user.email, role: resolveRole(data.user.email) } };
   }
 
   return { error: 'Registration failed. Please try again.' };
@@ -66,7 +80,7 @@ export async function signInWithEmail(email: string, password: string): Promise<
     return { error: error.message };
   }
   if (data.user && data.user.email) {
-    return { user: { id: data.user.id, email: data.user.email } };
+    return { user: { id: data.user.id, email: data.user.email, role: resolveRole(data.user.email) } };
   }
   return { error: 'Invalid authentication credentials.' };
 }

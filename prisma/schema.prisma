@@ -53,3 +53,22 @@ model AnalyticsLog {
 
   @@map("analytics_logs")
 }
+
+model UserRole {
+  id        String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email     String    @unique
+  role      String    @default("user")
+  createdAt DateTime? @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("user_roles")
+}
+
+model SystemSettings {
+  id              String    @id @default("global")
+  knowledgeMode   String    @default("okf") @map("knowledge_mode")
+  routerStrategy  String    @default("smart") @map("router_strategy")
+  updatedBy       String?   @map("updated_by")
+  updatedAt       DateTime? @default(now()) @map("updated_at") @db.Timestamptz
+
+  @@map("system_settings")
+}

@@ -13,6 +13,8 @@ export interface DocumentItem {
   userId?: string;
   createdAt: string;
   isAdmin?: boolean;
+  isOKF?: boolean;
+  okfContent?: string;
 }
 
 export interface DocumentChunk {
@@ -26,6 +28,7 @@ export interface DocumentChunk {
     chunkIndex?: number;
     title?: string;
     category?: DocumentCategory;
+    isOKF?: boolean;
   };
   similarity?: number;
 }
@@ -33,6 +36,21 @@ export interface DocumentChunk {
 export type LLMProviderId = 'groq' | 'gemini' | 'openrouter';
 
 export type RouterStrategy = 'smart' | 'round-robin' | 'priority-fallback';
+
+export type KnowledgeMode = 'okf' | 'standard-rag';
+
+export interface ModelHealth {
+  model: string;
+  provider: LLMProviderId;
+  isHealthy: boolean;
+  consecutiveErrors: number;
+  rateLimitHits: number;
+  cooldownUntil?: string;
+  lastUsedAt?: string;
+  totalRequests: number;
+  successfulRequests: number;
+  avgLatencyMs: number;
+}
 
 export interface ProviderHealth {
   id: LLMProviderId;
@@ -48,6 +66,7 @@ export interface ProviderHealth {
   successfulRequests: number;
   rateLimitHits: number;
   estimatedCostPer1k: number;
+  models?: ModelHealth[];
 }
 
 export interface RouterTelemetry {
@@ -71,6 +90,13 @@ export interface SourceCitation {
   category?: DocumentCategory;
 }
 
+export interface WebReference {
+  title: string;
+  url: string;
+  snippet: string;
+  source: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'system';
@@ -78,6 +104,7 @@ export interface ChatMessage {
   createdAt: string;
   isConversational?: boolean;
   citations?: SourceCitation[];
+  webReferences?: WebReference[];
   telemetry?: {
     providerUsed: LLMProviderId;
     providerName: string;
@@ -102,6 +129,12 @@ export interface AnalyticsSummary {
     avgLatency: number;
     rateLimitCount: number;
     status: 'healthy' | 'cooldown' | 'degraded' | 'disabled';
+    models?: Array<{
+      model: string;
+      rateLimitHits: number;
+      isHealthy: boolean;
+      inCooldown: boolean;
+    }>;
   }>;
   unansweredQuestions: Array<{
     id: string;
