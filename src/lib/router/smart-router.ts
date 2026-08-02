@@ -16,26 +16,21 @@ export interface RouteResult {
  */
 export const GROQ_MODELS = [
   'llama-3.3-70b-versatile',
-  'meta-llama/llama-4-scout-17b-16e-instruct',
-  'qwen/qwen3-32b',
   'llama-3.1-8b-instant',
   'mixtral-8x7b-32768',
+  'gemma2-9b-it',
 ];
 
 export const GEMINI_MODELS = [
-  'gemini-2.5-flash',
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
-  'gemini-1.5-flash',
-  'gemini-1.5-pro',
 ];
 
 export const OPENROUTER_MODELS = [
   'meta-llama/llama-3.3-70b-instruct:free',
-  'qwen/qwen3-32b:free',
-  'mistralai/mistral-small-3.2-24b-instruct:free',
-  'google/gemini-2.0-flash-lite-preview-02-05:free',
-  'deepseek/deepseek-r1:free',
+  'google/gemini-2.0-flash-lite-001',
+  'deepseek/deepseek-r1-distill-llama-70b',
+  'qwen/qwen-2.5-coder-32b-instruct',
   'openrouter/auto',
 ];
 
