@@ -1,17 +1,67 @@
 import { NextResponse } from 'next/server';
 import { smartRouter } from '@/lib/router/smart-router';
-import { localVectorStore } from '@/lib/supabase/client';
+import { getSupabaseClient, localVectorStore } from '@/lib/supabase/client';
 import { AnalyticsSummary, LLMProviderId } from '@/types/rag';
 
 export async function GET() {
   try {
     const providers = smartRouter.getProviderStates();
-    const logs = smartRouter.getTelemetryLogs();
-    const docs = localVectorStore.getDocuments();
+    const routerLogs = smartRouter.getTelemetryLogs();
+    const supabase = getSupabaseClient();
 
+    let totalQueries = 0;
+    let avgLatencyMs = 0;
+    let totalDocuments = 0;
+    let totalChunks = 0;
+    let unansweredQuestions: Array<{ id: string; query: string; reason: string; createdAt: string }> = [];
+
+    // 1. Fetch real documents count & total chunks count
+    if (supabase) {
+      try {
+        const { data: docsData } = await supabase.from('documents').select('id, chunk_count');
+        if (docsData) {
+          totalDocuments = docsData.length;
+          totalChunks = docsData.reduce((acc, d) => acc + (d.chunk_count || 0), 0);
+        }
+
+        // Fetch real analytics logs from Supabase
+        const { data: analyticsData } = await supabase.from('chat_analytics').select('*').order('created_at', { ascending: false });
+        if (analyticsData && analyticsData.length > 0) {
+          totalQueries = analyticsData.length;
+          avgLatencyMs = Math.round(analyticsData.reduce((acc, r) => acc + (r.latency_ms || 0), 0) / totalQueries);
+        }
+
+        // Fetch real unanswered questions from Supabase
+        const { data: uqData } = await supabase.from('unanswered_questions').select('*').order('created_at', { ascending: false }).limit(10);
+        if (uqData && uqData.length > 0) {
+          unansweredQuestions = uqData.map(u => ({
+            id: u.id,
+            query: u.query,
+            reason: u.reason || 'No matching document chunk found',
+            createdAt: u.created_at,
+          }));
+        }
+      } catch (dbErr) {
+        console.warn('Analytics DB fetch error:', dbErr);
+      }
+    }
+
+    // Fallback to memory store if DB empty or local mode
+    if (totalDocuments === 0) {
+      const localDocs = localVectorStore.getDocuments();
+      totalDocuments = localDocs.length;
+      totalChunks = localDocs.reduce((acc, d) => acc + d.chunkCount, 0);
+    }
+
+    if (totalQueries === 0 && routerLogs.length > 0) {
+      totalQueries = routerLogs.length;
+      avgLatencyMs = Math.round(routerLogs.reduce((acc, curr) => acc + curr.latencyMs, 0) / routerLogs.length);
+    }
+
+    // 2. Compile real provider stats
     const providerStats: AnalyticsSummary['providerStats'] = {
-      groq: { name: 'Groq', requests: 0, successRate: 100, avgLatency: 240, rateLimitCount: 0, status: 'healthy' },
-      gemini: { name: 'Gemini', requests: 0, successRate: 100, avgLatency: 410, rateLimitCount: 0, status: 'healthy' },
+      groq: { name: 'Groq Cloud', requests: 0, successRate: 100, avgLatency: 240, rateLimitCount: 0, status: 'healthy' },
+      gemini: { name: 'Google Gemini', requests: 0, successRate: 100, avgLatency: 410, rateLimitCount: 0, status: 'healthy' },
       openrouter: { name: 'OpenRouter', requests: 0, successRate: 100, avgLatency: 650, rateLimitCount: 0, status: 'healthy' },
     };
 
@@ -35,34 +85,14 @@ export async function GET() {
       }
     });
 
-    const totalQueries = logs.length > 0 ? logs.length : 12;
-    const avgLatencyMs = logs.length > 0
-      ? Math.round(logs.reduce((acc, curr) => acc + curr.latencyMs, 0) / logs.length)
-      : 320;
-
-    const totalChunks = docs.reduce((acc, d) => acc + d.chunkCount, 0);
-
     const summary: AnalyticsSummary = {
       totalQueries,
       avgLatencyMs,
       activeProvidersCount: providers.filter(p => p.isHealthy).length,
-      totalDocuments: docs.length,
+      totalDocuments,
       totalChunks,
       providerStats,
-      unansweredQuestions: [
-        {
-          id: 'uq-1',
-          query: 'What is the refund policy for custom enterprise software subscriptions?',
-          reason: 'No matching document chunk above threshold (>0.4)',
-          createdAt: new Date(Date.now() - 3600000 * 4).toISOString(),
-        },
-        {
-          id: 'uq-2',
-          query: 'Which server locations support low latency GPU inferencing in EU?',
-          reason: 'Document missing infrastructure details',
-          createdAt: new Date(Date.now() - 3600000 * 12).toISOString(),
-        }
-      ],
+      unansweredQuestions,
     };
 
     return NextResponse.json(summary);

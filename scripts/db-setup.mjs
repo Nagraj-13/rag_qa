@@ -47,6 +47,38 @@ async function setupDatabase() {
         category TEXT DEFAULT 'general',
         user_id UUID,
         is_admin BOOLEAN DEFAULT false,
+        is_okf BOOLEAN DEFAULT false,
+        okf_content TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      ALTER TABLE documents ADD COLUMN IF NOT EXISTS is_okf BOOLEAN DEFAULT false;
+      ALTER TABLE documents ADD COLUMN IF NOT EXISTS okf_content TEXT;
+
+      CREATE TABLE IF NOT EXISTS system_settings (
+        id TEXT PRIMARY KEY DEFAULT 'global',
+        knowledge_mode TEXT DEFAULT 'okf',
+        router_strategy TEXT DEFAULT 'smart',
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_by TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS chat_analytics (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        query TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model_used TEXT NOT NULL,
+        latency_ms INT NOT NULL,
+        retrieved_chunk_count INT DEFAULT 0,
+        query_type TEXT DEFAULT 'document_rag',
+        knowledge_mode TEXT DEFAULT 'okf',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS unanswered_questions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        query TEXT NOT NULL,
+        reason TEXT NOT NULL,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
