@@ -1,26 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { KnowledgeMode, RouterStrategy } from '@/types/rag';
-
-/**
- * In-memory system settings store.
- * In production, persist to a `system_settings` table in Supabase.
- */
-interface SystemSettings {
-  knowledgeMode: KnowledgeMode;
-  routerStrategy: RouterStrategy;
-  updatedAt: string;
-  updatedBy: string | null;
-}
-
-let systemSettings: SystemSettings = {
-  knowledgeMode: 'okf',
-  routerStrategy: 'smart',
-  updatedAt: new Date().toISOString(),
-  updatedBy: null,
-};
+import { SettingsStore } from '@/lib/settings/store';
 
 export async function GET() {
-  return NextResponse.json(systemSettings);
+  try {
+    const settings = await SettingsStore.getSettings();
+    return NextResponse.json(settings);
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -28,18 +15,9 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const { knowledgeMode, routerStrategy, adminEmail } = body;
 
-    if (knowledgeMode && (knowledgeMode === 'okf' || knowledgeMode === 'standard-rag')) {
-      systemSettings.knowledgeMode = knowledgeMode;
-    }
+    const updated = await SettingsStore.updateSettings(knowledgeMode, routerStrategy, adminEmail);
 
-    if (routerStrategy && ['smart', 'round-robin', 'priority-fallback'].includes(routerStrategy)) {
-      systemSettings.routerStrategy = routerStrategy;
-    }
-
-    systemSettings.updatedAt = new Date().toISOString();
-    systemSettings.updatedBy = adminEmail || null;
-
-    return NextResponse.json({ success: true, settings: systemSettings });
+    return NextResponse.json({ success: true, settings: updated });
   } catch (err: any) {
     return NextResponse.json({ error: err.message }, { status: 500 });
   }

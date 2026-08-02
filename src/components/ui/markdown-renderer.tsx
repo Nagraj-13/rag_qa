@@ -36,10 +36,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
               {children}
             </h4>
           ),
+          // Use div instead of paragraph p to prevent HTML hydration errors when nested block elements (div, pre, code blocks) exist
           p: ({ children }) => (
-            <p className="my-1.5 leading-relaxed text-zinc-300">
+            <div className="my-1.5 leading-relaxed text-zinc-300">
               {children}
-            </p>
+            </div>
           ),
           ul: ({ children }) => (
             <ul className="my-2 space-y-1 pl-4 list-disc marker:text-indigo-400">
@@ -61,6 +62,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
               {children}
             </strong>
           ),
+          pre: ({ children }) => (
+            <div className="my-3 rounded-lg bg-[#050505] border border-white/10 overflow-hidden font-mono text-xs shadow-inner">
+              <div className="px-3 py-1 bg-[#121215] border-b border-white/[0.08] text-[10px] text-zinc-400 font-mono uppercase">
+                Code Snippet
+              </div>
+              <div className="p-3.5 overflow-x-auto text-zinc-200 leading-relaxed font-mono whitespace-pre">
+                {children}
+              </div>
+            </div>
+          ),
           code({ node, inline, className: codeClassName, children, ...props }: any) {
             if (inline) {
               return (
@@ -70,14 +81,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
               );
             }
             return (
-              <div className="my-3 rounded-lg bg-[#050505] border border-white/10 overflow-hidden font-mono text-xs shadow-inner">
-                <div className="px-3 py-1 bg-[#121215] border-b border-white/[0.08] text-[10px] text-zinc-400 font-mono uppercase">
-                  Code
-                </div>
-                <pre className="p-3.5 overflow-x-auto text-zinc-200 leading-relaxed font-mono">
-                  <code>{children}</code>
-                </pre>
-              </div>
+              <code className="font-mono text-xs text-zinc-200" {...props}>
+                {children}
+              </code>
             );
           },
           a: ({ href, children }) => (

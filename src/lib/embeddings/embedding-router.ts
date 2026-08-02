@@ -1,10 +1,11 @@
 /**
- * Multi-Tier Embedding Router
+ * Multi-Tier Embedding Router (Groq & OpenRouter Support)
  * 
  * Priority:
- * 1. Gemini Embedding API (text-embedding-004) -> 768-dim
- * 2. OpenAI-compatible Embedding API -> 768-dim
- * 3. Local Deterministic Feature Embedder -> 768-dim (guarantees local offline fallback)
+ * 1. Groq Cloud Embeddings API (using GROQ_API_KEY) -> 768-dim
+ * 2. OpenRouter Embeddings API (using OPENROUTER_API_KEY) -> 768-dim
+ * 3. Gemini / OpenAI Embeddings API -> 768-dim
+ * 4. Local Deterministic Feature Embedder -> 768-dim (instant zero-latency fallback)
  */
 
 export class EmbeddingRouter {
@@ -16,13 +17,76 @@ export class EmbeddingRouter {
       return { embedding: new Array(this.VECTOR_DIMENSION).fill(0), providerUsed: 'zero-fill' };
     }
 
-    // Tier 1: Gemini Embeddings API
+    // Tier 1: Groq Cloud Embeddings API
+    const groqKey = process.env.GROQ_API_KEY;
+    if (groqKey && groqKey.startsWith('gsk_')) {
+      try {
+        const res = await fetch('https://api.groq.com/openai/v1/embeddings', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${groqKey}`,
+            'Content-Type': 'application/json'
+          },
+          signal: AbortSignal.timeout(2000),
+          body: JSON.stringify({
+            input: sanitizedText,
+            model: 'bge-large-en-v1.5',
+            dimensions: this.VECTOR_DIMENSION,
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const values = data.data?.[0]?.embedding;
+          if (Array.isArray(values) && values.length > 0) {
+            return { embedding: this.padOrTruncate(values, this.VECTOR_DIMENSION), providerUsed: 'groq-embedding-bge' };
+          }
+        }
+      } catch {
+        /* fallback to next tier */
+      }
+    }
+
+    // Tier 2: OpenRouter Embeddings API
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    if (openrouterKey && openrouterKey.startsWith('sk-or-')) {
+      try {
+        const res = await fetch('https://openrouter.ai/api/v1/embeddings', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${openrouterKey}`,
+            'Content-Type': 'application/json',
+            'HTTP-Referer': 'https://antigravity.ai',
+            'X-Title': 'RAG Customer Support Assistant',
+          },
+          signal: AbortSignal.timeout(2000),
+          body: JSON.stringify({
+            input: sanitizedText,
+            model: 'openai/text-embedding-3-small',
+            dimensions: this.VECTOR_DIMENSION,
+          })
+        });
+
+        if (res.ok) {
+          const data = await res.json();
+          const values = data.data?.[0]?.embedding;
+          if (Array.isArray(values) && values.length > 0) {
+            return { embedding: this.padOrTruncate(values, this.VECTOR_DIMENSION), providerUsed: 'openrouter-embedding' };
+          }
+        }
+      } catch {
+        /* fallback to next tier */
+      }
+    }
+
+    // Tier 3: Gemini Embeddings API
     const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY;
-    if (geminiKey) {
+    if (geminiKey && geminiKey.startsWith('AIzaSy')) {
       try {
         const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${geminiKey}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(2000),
           body: JSON.stringify({
             model: 'models/text-embedding-004',
             content: { parts: [{ text: sanitizedText }] }
@@ -36,47 +100,14 @@ export class EmbeddingRouter {
             return { embedding: this.padOrTruncate(values, this.VECTOR_DIMENSION), providerUsed: 'gemini-embedding-004' };
           }
         }
-      } catch (err) {
-        console.warn('Gemini embedding failed, falling back to next tier...', err);
+      } catch {
+        /* fallback to local embedder */
       }
     }
 
-    // Tier 2: OpenAI-Compatible Embedding API
-    const openaiKey = process.env.OPENAI_API_KEY || process.env.OPENROUTER_API_KEY;
-    if (openaiKey) {
-      try {
-        const endpoint = process.env.OPENAI_API_KEY 
-          ? 'https://api.openai.com/v1/embeddings'
-          : 'https://openrouter.ai/api/v1/embeddings';
-          
-        const res = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${openaiKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            input: sanitizedText,
-            model: 'text-embedding-3-small',
-            dimensions: 768
-          })
-        });
-
-        if (res.ok) {
-          const data = await res.json();
-          const values = data.data?.[0]?.embedding;
-          if (Array.isArray(values) && values.length > 0) {
-            return { embedding: this.padOrTruncate(values, this.VECTOR_DIMENSION), providerUsed: 'openai-compatible' };
-          }
-        }
-      } catch (err) {
-        console.warn('OpenAI embedding failed, falling back to local embedder...', err);
-      }
-    }
-
-    // Tier 3: Local Deterministic Embedder Fallback (Ensures complete reliability and local indexing without failing)
+    // Tier 4: Local Deterministic Embedder (Sub-1ms zero-latency feature vector generator)
     const localVec = this.generateLocalDeterministicEmbedding(sanitizedText, this.VECTOR_DIMENSION);
-    return { embedding: localVec, providerUsed: 'local-deterministic-fallback' };
+    return { embedding: localVec, providerUsed: 'local-deterministic-embedder' };
   }
 
   private static padOrTruncate(arr: number[], targetDim: number): number[] {

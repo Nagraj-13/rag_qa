@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { UploadCloud, FileText, Trash2, Database, RefreshCw, AlertCircle, Layers, Tag, BookOpen, Sparkles, X, Eye, HelpCircle, FileCheck } from 'lucide-react';
+import { UploadCloud, FileText, Trash2, Database, RefreshCw, AlertCircle, Layers, Tag, BookOpen, X, Eye, FileCheck, FolderPlus, ListFilter, Code } from 'lucide-react';
 import { DocumentItem, DocumentCategory, KnowledgeMode } from '@/types/rag';
 
 interface DocumentManagerProps {
@@ -9,8 +9,10 @@ interface DocumentManagerProps {
   knowledgeMode?: KnowledgeMode;
 }
 
+type FormatFilter = 'all' | 'rag' | 'okf';
+
 const OKF_SCHEMA_DEMO = `===================================================================
-📂 OPEN KNOWLEDGE FORMAT (OKF) — MASTER WIKI DIRECTORY STRUCTURE
+📂 OPEN KNOWLEDGE FORMAT (OKF) — WIKI DIRECTORY STRUCTURE
 ===================================================================
 
 docs/okf_wiki/
@@ -26,39 +28,7 @@ docs/okf_wiki/
 
 
 ===================================================================
-📄 1. MASTER WIKI INDEX FILE: docs/okf_wiki/INDEX.md
-===================================================================
----
-title: "Open Knowledge Base — Master Wiki Index"
-doc_id: "okf-index-master"
-category: "master_index"
-version: "2.5"
-updated_at: "2026-08-02"
-tags: ["index", "master-wiki", "customer-support", "okf-schema"]
-entities: ["Tier 1 Specialist", "Tier 2 Engineer", "Billing Team", "Compliance Officer", "Smart Router"]
-schema_version: "okf-v1.0"
----
-
-# 📚 Open Knowledge Base — Master Wiki Index
-
-## 📖 Executive Summary
-Master directory and category index for Antigravity Enterprise Customer Support Open Knowledge Format (OKF) Wiki.
-
-## 📂 Category Directory Map
-- customer_support/ — SLA, Response Times & Escalation Matrix
-- billing/ — Subscription Plans, Refunds & Data Purge Rules
-- technical/ — Router 429 Failovers & Vector Database Limits
-- returns/ — Warranty Terms & RMA Procedures
-
-## 💡 Wiki Category Index & Cross-References
-- [Customer Support SLA & Escalation](file:///f:/Projects/FreeLance/rag_qa/docs/okf_wiki/customer_support/01_sla_and_escalation.md)
-- [Subscription Billing & Refund Policy](file:///f:/Projects/FreeLance/rag_qa/docs/okf_wiki/billing/02_refund_and_subscription.md)
-- [Technical Support FAQ](file:///f:/Projects/FreeLance/rag_qa/docs/okf_wiki/technical/03_troubleshooting_faq.md)
-- [Product Returns & Warranty](file:///f:/Projects/FreeLance/rag_qa/docs/okf_wiki/returns/04_warranty_and_rma.md)
-
-
-===================================================================
-📄 2. SAMPLE WIKI ENTRY FILE: docs/okf_wiki/customer_support/01_sla_and_escalation.md
+📄 SAMPLE OKF WIKI FILE SPECIFICATION
 ===================================================================
 ---
 title: "Customer Support SLA & Incident Escalation Policy"
@@ -89,8 +59,7 @@ Antigravity Enterprise provides 24/7 technical support and incident management f
 
 ## 🔗 Cross-References & Related Wiki Documents
 - [Master Wiki Index](file:///f:/Projects/FreeLance/rag_qa/docs/okf_wiki/INDEX.md)
-- [Subscription Billing & Refund Policy](file:///f:/Projects/FreeLance/rag_qa/docs/okf_wiki/billing/02_refund_and_subscription.md)
-- [Technical Troubleshooting FAQ](file:///f:/Projects/FreeLance/rag_qa/docs/okf_wiki/technical/03_troubleshooting_faq.md)`;
+- [Subscription Billing & Refund Policy](file:///f:/Projects/FreeLance/rag_qa/docs/okf_wiki/billing/02_refund_and_subscription.md)`;
 
 export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowledgeMode: propKnowledgeMode }) => {
   const [documents, setDocuments] = useState<DocumentItem[]>([]);
@@ -100,9 +69,14 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewingOKFDoc, setViewingOKFDoc] = useState<DocumentItem | null>(null);
+  const [inspectingChunksDoc, setInspectingChunksDoc] = useState<DocumentItem | null>(null);
+  const [inspectingChunks, setInspectingChunks] = useState<Array<{ id: string; content: string; metadata?: any }> | null>(null);
+  const [loadingChunks, setLoadingChunks] = useState(false);
   const [showDemoSchema, setShowDemoSchema] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const [activeKnowledgeMode, setActiveKnowledgeMode] = useState<KnowledgeMode>(propKnowledgeMode || 'okf');
+  const [uploadMode, setUploadMode] = useState<'files' | 'folder'>('files');
+  const [formatFilter, setFormatFilter] = useState<FormatFilter>('all');
 
   useEffect(() => {
     if (propKnowledgeMode) {
@@ -141,6 +115,11 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
     const formData = new FormData();
     formData.append('file', file);
     formData.append('category', category);
+    
+    // Preserve webkitRelativePath if folder upload was used
+    const relativePath = (file as any).webkitRelativePath || file.name;
+    formData.append('relativePath', relativePath);
+
     if (userId) formData.append('userId', userId);
 
     const res = await fetch('/api/documents', {
@@ -158,78 +137,41 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
     setUploading(true);
     setError(null);
 
-    const total = files.length;
+    // Filter valid document extensions
+    const validFiles: File[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      const ext = f.name.split('.').pop()?.toLowerCase();
+      if (ext && ['pdf', 'docx', 'txt', 'md', 'json'].includes(ext)) {
+        validFiles.push(f);
+      }
+    }
+
+    if (validFiles.length === 0) {
+      setError('No supported document files (.pdf, .docx, .txt, .md) found in selected upload.');
+      setUploading(false);
+      return;
+    }
+
+    const total = validFiles.length;
     setUploadProgress({ current: 0, total });
 
     try {
       for (let i = 0; i < total; i++) {
-        const file = files[i];
-        setUploadStatus(`Processing ${file.name} (${i + 1}/${total})...`);
+        const file = validFiles[i];
+        const relativeName = (file as any).webkitRelativePath || file.name;
+        setUploadStatus(`Parsing & chunking ${relativeName} (${i + 1}/${total})...`);
         setUploadProgress({ current: i + 1, total });
         await uploadSingleFile(file);
       }
 
-      setUploadStatus(`Successfully uploaded ${total} document${total > 1 ? 's' : ''}!`);
+      setUploadStatus(`Successfully ingested ${total} document${total > 1 ? 's' : ''}!`);
       await fetchDocuments();
     } catch (err: any) {
       setError(err.message || 'Failed to upload documents');
     } finally {
       setUploading(false);
       setUploadProgress(null);
-    }
-  };
-
-  const handleImportDemoRAG = async () => {
-    setUploading(true);
-    setError(null);
-    setUploadStatus('Importing sample Word (.docx) customer support documents...');
-
-    try {
-      const res = await fetch('/api/documents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'import_demo_rag' }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to import demo Word documents');
-      }
-
-      setUploadStatus(`Imported ${data.count} sample Word (.docx) customer support documents!`);
-      await fetchDocuments();
-    } catch (err: any) {
-      setError(err.message || 'Failed to import demo Word documents');
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const handleImportDemoOKF = async () => {
-    setUploading(true);
-    setError(null);
-    setUploadStatus('Importing predefined Demo OKF Customer Support bundle...');
-
-    try {
-      const res = await fetch('/api/documents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'import_demo_okf' }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to import demo documents');
-      }
-
-      setUploadStatus(`Imported ${data.count} demo OKF documents!`);
-      await fetchDocuments();
-    } catch (err: any) {
-      setError(err.message || 'Failed to import demo documents');
-    } finally {
-      setUploading(false);
     }
   };
 
@@ -242,6 +184,20 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
       }
     } catch (err: any) {
       alert('Failed to delete document');
+    }
+  };
+
+  const handleInspectChunks = async (doc: DocumentItem) => {
+    setInspectingChunksDoc(doc);
+    setLoadingChunks(true);
+    try {
+      const res = await fetch(`/api/documents?id=${doc.id}`);
+      const data = await res.json();
+      setInspectingChunks(data.chunks || []);
+    } catch (err) {
+      console.error('Failed to load chunks:', err);
+    } finally {
+      setLoadingChunks(false);
     }
   };
 
@@ -265,6 +221,16 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
 
   const isOKFMode = activeKnowledgeMode === 'okf';
 
+  // Filter documents based on selected format tab
+  const filteredDocuments = documents.filter(doc => {
+    if (formatFilter === 'rag') return !doc.isOKF;
+    if (formatFilter === 'okf') return doc.isOKF;
+    return true;
+  });
+
+  const ragCount = documents.filter(d => !d.isOKF).length;
+  const okfCount = documents.filter(d => d.isOKF).length;
+
   return (
     <div className="space-y-6">
       
@@ -283,7 +249,7 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
           )}
         </div>
         <span className="text-[11px] text-zinc-500 font-mono">
-          {isOKFMode ? 'Documents auto-converted to YAML frontmatter wiki' : 'Direct vector chunk indexing'}
+          {isOKFMode ? 'Documents & OKF folders auto-converted to YAML frontmatter wiki' : 'Parsed, chunked & stored in pgvector for semantic search'}
         </span>
       </div>
 
@@ -293,33 +259,48 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
           <div>
             <h2 className="text-sm font-semibold text-white tracking-tight flex items-center gap-2">
               <UploadCloud className="w-4 h-4 text-indigo-400" />
-              {isOKFMode ? 'Upload & Synthesize OKF Knowledge Bundles' : 'Upload Vector RAG Documents'}
+              {isOKFMode ? 'Upload OKF Documents or Complete OKF Folder' : 'Upload Vector RAG Documents'}
             </h2>
             <p className="text-xs text-zinc-400 mt-0.5">
               {isOKFMode
-                ? 'Upload support files or load pre-compiled OKF bundles to synthesize structured wiki Markdown with YAML frontmatter.'
-                : 'Upload support documents (SLA, privacy policy, refund policy, FAQs) for direct vector retrieval.'}
+                ? 'Upload individual files or select an entire OKF Wiki folder (including INDEX.md and subdirectories) to ingest.'
+                : 'Upload support documents (.pdf, .docx, .txt, .md) to parse, chunk, and store in pgvector for semantic search.'}
             </p>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
             {isOKFMode && (
               <>
+                {/* Upload Mode Selector (Individual Files vs OKF Folder) */}
+                <div className="flex items-center gap-1 bg-[#09090b] p-1 rounded-lg border border-white/[0.08] text-[11px] font-mono">
+                  <button
+                    onClick={() => setUploadMode('files')}
+                    className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+                      uploadMode === 'files'
+                        ? 'bg-indigo-600 text-white font-semibold'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    Files
+                  </button>
+                  <button
+                    onClick={() => setUploadMode('folder')}
+                    className={`px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1 ${
+                      uploadMode === 'folder'
+                        ? 'bg-indigo-600 text-white font-semibold'
+                        : 'text-zinc-400 hover:text-white'
+                    }`}
+                  >
+                    <FolderPlus className="w-3 h-3" /> OKF Folder
+                  </button>
+                </div>
+
                 <button
                   onClick={() => setShowDemoSchema(true)}
                   className="px-3 py-1.5 rounded-lg bg-[#141417] hover:bg-zinc-800 text-zinc-300 border border-white/[0.1] font-mono text-[11px] flex items-center gap-1.5 cursor-pointer"
                 >
                   <FileCheck className="w-3.5 h-3.5 text-indigo-400" />
-                  Inspect OKF Demo Format
-                </button>
-
-                <button
-                  onClick={handleImportDemoOKF}
-                  disabled={uploading}
-                  className="px-3.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-medium text-xs transition-all shadow-sm flex items-center gap-1.5 cursor-pointer font-sans"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Load Demo OKF Bundle
+                  Inspect OKF Schema
                 </button>
               </>
             )}
@@ -341,31 +322,50 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
           </div>
         </div>
 
-        {/* Multi-File Dropzone */}
+        {/* Multi-File or Folder Dropzone */}
         <div className="relative border border-dashed border-white/20 hover:border-indigo-500/60 rounded-xl p-8 text-center transition-all bg-[#09090b]/60 group">
-          <input
-            type="file"
-            accept=".pdf,.docx,.txt,.md"
-            multiple
-            onChange={(e) => {
-              const files = e.target.files;
-              if (files && files.length > 0) handleFileUpload(files);
-            }}
-            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-            disabled={uploading}
-          />
+          {uploadMode === 'folder' && isOKFMode ? (
+            <input
+              type="file"
+              {...({ webkitdirectory: '', directory: '' } as any)}
+              multiple
+              onChange={(e) => {
+                const files = e.target.files;
+                if (files && files.length > 0) handleFileUpload(files);
+              }}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+              disabled={uploading}
+            />
+          ) : (
+            <input
+              type="file"
+              accept=".pdf,.docx,.txt,.md"
+              multiple
+              onChange={(e) => {
+                const files = e.target.files;
+                if (files && files.length > 0) handleFileUpload(files);
+              }}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+              disabled={uploading}
+            />
+          )}
+
           <div className="flex flex-col items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-zinc-900 border border-white/10 flex items-center justify-center text-indigo-400 group-hover:border-indigo-500/50 transition-colors">
-              <UploadCloud className="w-5 h-5" />
+              {uploadMode === 'folder' ? <FolderPlus className="w-5 h-5 text-indigo-400" /> : <UploadCloud className="w-5 h-5" />}
             </div>
             <div>
               <p className="text-xs font-semibold text-white">
-                Drop files here or <span className="text-indigo-400 underline">browse</span>
+                {uploadMode === 'folder' && isOKFMode
+                  ? 'Click or drop an entire OKF Wiki folder here'
+                  : 'Drop files here or browse'}
               </p>
               <p className="text-[11px] text-zinc-500 font-mono mt-1">
-                {isOKFMode
+                {uploadMode === 'folder' && isOKFMode
+                  ? 'Preserves OKF directory structure (e.g. docs/okf_wiki/INDEX.md, customer_support/01_sla.md)'
+                  : isOKFMode
                   ? 'PDF, DOCX, TXT, MD — Auto-converted to OKF Markdown with YAML Frontmatter'
-                  : 'PDF, DOCX, TXT, MD — Parsed and indexed into pgvector chunks'}
+                  : 'PDF, DOCX, TXT, MD — Parsed, chunked & indexed into pgvector embeddings'}
               </p>
             </div>
           </div>
@@ -397,76 +397,122 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
         )}
       </div>
 
-      {/* Documents Table */}
+      {/* Documents Table & Repository Filter */}
       <div className="linear-card p-6 space-y-4">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <h3 className="text-xs font-semibold text-white tracking-tight flex items-center gap-2">
             <Database className="w-4 h-4 text-emerald-400" />
-            {isOKFMode ? 'Open Knowledge Base Repository' : 'Vector Database Storage'} ({documents.length} documents)
+            Knowledge Base Repository ({filteredDocuments.length} documents)
           </h3>
-          <button
-            onClick={fetchDocuments}
-            className="px-2.5 py-1 rounded-md bg-[#141417] hover:bg-zinc-800 text-zinc-300 border border-white/[0.08] text-[11px] font-mono flex items-center gap-1.5 cursor-pointer"
-          >
-            <RefreshCw className="w-3 h-3" /> Refresh
-          </button>
+
+          <div className="flex items-center gap-3">
+            {/* Format Filter Bar */}
+            <div className="flex items-center gap-1 bg-[#09090b] p-1 rounded-lg border border-white/[0.08] text-[11px] font-mono">
+              <button
+                onClick={() => setFormatFilter('all')}
+                className={`px-2.5 py-1 rounded-md transition-all cursor-pointer ${
+                  formatFilter === 'all'
+                    ? 'bg-zinc-200 text-black font-semibold'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                All ({documents.length})
+              </button>
+              <button
+                onClick={() => setFormatFilter('rag')}
+                className={`px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1 ${
+                  formatFilter === 'rag'
+                    ? 'bg-emerald-600 text-white font-semibold'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <Layers className="w-3 h-3" /> Standard RAG ({ragCount})
+              </button>
+              <button
+                onClick={() => setFormatFilter('okf')}
+                className={`px-2.5 py-1 rounded-md transition-all cursor-pointer flex items-center gap-1 ${
+                  formatFilter === 'okf'
+                    ? 'bg-indigo-600 text-white font-semibold'
+                    : 'text-zinc-400 hover:text-white'
+                }`}
+              >
+                <BookOpen className="w-3 h-3" /> OKF Wiki ({okfCount})
+              </button>
+            </div>
+
+            <button
+              onClick={fetchDocuments}
+              className="px-2.5 py-1 rounded-md bg-[#141417] hover:bg-zinc-800 text-zinc-300 border border-white/[0.08] text-[11px] font-mono flex items-center gap-1.5 cursor-pointer"
+            >
+              <RefreshCw className="w-3 h-3" /> Refresh
+            </button>
+          </div>
         </div>
 
         {loading ? (
-          <div className="text-center py-8 text-zinc-500 text-xs font-mono">Loading documents...</div>
-        ) : documents.length === 0 ? (
-          <div className="text-center py-10 text-zinc-500 text-xs space-y-2 font-mono">
-            <p>No documents uploaded yet.</p>
-            {isOKFMode && (
-              <button
-                onClick={handleImportDemoOKF}
-                className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-sm inline-flex items-center gap-1.5 cursor-pointer font-sans"
-              >
-                <Sparkles className="w-3.5 h-3.5" /> Load Demo OKF Customer Support Bundle
-              </button>
-            )}
+          <div className="text-center py-8 text-zinc-500 text-xs font-mono">Loading vector documents...</div>
+        ) : filteredDocuments.length === 0 ? (
+          <div className="text-center py-10 text-zinc-500 text-xs space-y-1 font-mono">
+            <p>No matching documents found.</p>
+            <p className="text-zinc-600 text-[11px]">
+              {formatFilter === 'okf'
+                ? 'Upload individual files or select an entire OKF Wiki folder above under OKF Mode.'
+                : formatFilter === 'rag'
+                ? 'Upload support documents (.pdf, .docx, .txt, .md) above under Standard RAG Mode.'
+                : 'Upload files or folders above to populate the repository.'}
+            </p>
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-zinc-300 border-collapse">
               <thead>
                 <tr className="border-b border-white/[0.08] text-zinc-400 font-mono text-[10px] uppercase tracking-wider">
-                  <th className="py-3 px-4">Document</th>
-                  {isOKFMode && <th className="py-3 px-4">Format</th>}
+                  <th className="py-3 px-4">Document / Relative Path</th>
+                  <th className="py-3 px-4">Ingestion Format</th>
                   <th className="py-3 px-4">Category</th>
-                  <th className="py-3 px-4">Chunks</th>
+                  <th className="py-3 px-4 font-mono">Vector Chunks</th>
                   <th className="py-3 px-4">Uploaded</th>
                   <th className="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {documents.map((doc) => (
+                {filteredDocuments.map((doc) => (
                   <tr key={doc.id} className="hover:bg-white/[0.02] transition-colors">
                     <td className="py-3.5 px-4 font-medium text-white flex items-center gap-2">
                       <FileText className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
-                      <span className="truncate max-w-xs">{doc.fileName}</span>
+                      <span className="truncate max-w-xs font-mono text-[11px]">{doc.fileName}</span>
                     </td>
-                    {isOKFMode && (
-                      <td className="py-3.5 px-4">
+                    <td className="py-3.5 px-4">
+                      {doc.isOKF ? (
                         <span className="px-2 py-0.5 rounded-md text-[9px] font-mono uppercase bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 flex items-center gap-1 w-fit">
                           <BookOpen className="w-3 h-3" /> OKF Format
                         </span>
-                      </td>
-                    )}
+                      ) : (
+                        <span className="px-2 py-0.5 rounded-md text-[9px] font-mono uppercase bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 flex items-center gap-1 w-fit">
+                          <Layers className="w-3 h-3" /> Standard RAG
+                        </span>
+                      )}
+                    </td>
                     <td className="py-3.5 px-4">
                       {getCategoryBadge(doc.category)}
                     </td>
                     <td className="py-3.5 px-4 font-mono">
                       <span className="inline-flex items-center gap-1 text-emerald-400 font-semibold">
                         <Layers className="w-3 h-3" />
-                        {doc.chunkCount}
+                        {doc.chunkCount} chunks
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-zinc-400 font-mono text-[11px]">
                       {new Date(doc.createdAt).toLocaleDateString()}
                     </td>
                     <td className="py-3.5 px-4 text-right space-x-1.5">
-                      {isOKFMode && doc.okfContent && (
+                      <button
+                        onClick={() => handleInspectChunks(doc)}
+                        className="px-2 py-1 rounded-md bg-[#141417] hover:bg-zinc-800 text-zinc-300 border border-white/10 text-[10px] font-mono inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <Code className="w-3 h-3 text-emerald-400" /> Chunks
+                      </button>
+                      {doc.isOKF && doc.okfContent && (
                         <button
                           onClick={() => setViewingOKFDoc(doc)}
                           className="px-2 py-1 rounded-md bg-[#18181b] hover:bg-zinc-800 text-zinc-300 border border-white/10 text-[10px] font-mono inline-flex items-center gap-1 cursor-pointer"
@@ -489,14 +535,63 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
         )}
       </div>
 
-      {/* OKF Demo Format Schema Modal */}
+      {/* Inspect Vector Chunks Modal */}
+      {inspectingChunksDoc && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#09090b] border border-white/10 rounded-xl max-w-3xl w-full p-6 space-y-4 shadow-2xl relative max-h-[85vh] flex flex-col">
+            <div className="flex items-center justify-between border-b border-white/[0.08] pb-3 shrink-0">
+              <div className="flex items-center gap-2 text-white font-semibold text-xs tracking-tight">
+                <Code className="w-4 h-4 text-emerald-400" />
+                <span>Vector Chunks Inspection — {inspectingChunksDoc.fileName}</span>
+              </div>
+              <button
+                onClick={() => { setInspectingChunksDoc(null); setInspectingChunks(null); }}
+                className="p-1 rounded-md bg-[#121215] hover:bg-zinc-800 text-zinc-400 hover:text-white border border-white/[0.08] cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {loadingChunks ? (
+              <div className="py-12 text-center text-zinc-500 text-xs font-mono">Loading vector chunks...</div>
+            ) : inspectingChunks && inspectingChunks.length > 0 ? (
+              <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+                {inspectingChunks.map((chunk, idx) => (
+                  <div key={chunk.id || idx} className="bg-[#050505] p-3.5 rounded-lg border border-white/[0.08] space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] font-mono text-zinc-400">
+                      <span className="text-emerald-400 font-semibold">Chunk #{idx + 1}</span>
+                      <span>Length: {chunk.content.length} chars</span>
+                    </div>
+                    <p className="text-xs text-zinc-200 font-mono whitespace-pre-wrap leading-relaxed">
+                      {chunk.content}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="py-8 text-center text-zinc-500 text-xs font-mono">No chunks found for this document.</div>
+            )}
+
+            <div className="flex justify-end shrink-0 pt-2 border-t border-white/[0.08]">
+              <button
+                onClick={() => { setInspectingChunksDoc(null); setInspectingChunks(null); }}
+                className="px-4 py-1.5 rounded-lg bg-white text-black font-semibold text-xs hover:bg-zinc-200 cursor-pointer"
+              >
+                Close Inspection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* OKF Schema Modal */}
       {showDemoSchema && (
         <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
           <div className="bg-[#09090b] border border-white/10 rounded-xl max-w-2xl w-full p-6 space-y-4 shadow-2xl relative max-h-[85vh] flex flex-col">
             <div className="flex items-center justify-between border-b border-white/[0.08] pb-3 shrink-0">
               <div className="flex items-center gap-2 text-white font-semibold text-xs tracking-tight">
                 <FileCheck className="w-4 h-4 text-indigo-400" />
-                <span>Open Knowledge Format (OKF) — Demo Schema Specification</span>
+                <span>Open Knowledge Format (OKF) — Schema Specification</span>
               </div>
               <button
                 onClick={() => setShowDemoSchema(false)}
@@ -507,7 +602,7 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
             </div>
 
             <p className="text-xs text-zinc-400 leading-relaxed shrink-0">
-              OKF bundles use strict YAML frontmatter for metadata, entities, and cross-references, followed by structured Markdown wiki sections.
+              OKF files use strict YAML frontmatter for metadata, entities, and cross-references, followed by structured Markdown wiki sections.
             </p>
 
             <div className="flex-1 overflow-y-auto bg-[#050505] p-4 rounded-lg border border-white/[0.08] font-mono text-xs text-zinc-300 whitespace-pre-wrap leading-relaxed">
