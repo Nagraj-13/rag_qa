@@ -1,39 +1,38 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { DocumentItem, DocumentChunk, DocumentCategory } from '@/types/rag';
 
-/**
- * Server-Side Supabase Client (Service Role Key)
- * Used in API routes for document CRUD, embedding storage, and RPC calls.
- * This key bypasses RLS — only use in server-side code (api routes).
- */
 let serverClient: SupabaseClient | null = null;
-
-const url = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
-const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-if (url && serviceKey && !url.includes('placeholder') && !url.includes('your-supabase-project')) {
-  serverClient = createClient(url, serviceKey);
-}
-
-export function getSupabaseClient(): SupabaseClient | null {
-  return serverClient;
-}
-
-/**
- * Browser-Side Supabase Client (Anon/Publishable Key)
- * Used for user-facing authentication (signUp, signIn, signOut, getUser).
- */
 let browserClient: SupabaseClient | null = null;
 
-export function getBrowserSupabaseClient(): SupabaseClient | null {
-  if (typeof window === 'undefined') return null;
+export function getSupabaseClient(): SupabaseClient | null {
+  if (serverClient) return serverClient;
 
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !serviceKey || supabaseUrl.includes('your-supabase-url')) {
+    return null;
+  }
+
+  try {
+    serverClient = createClient(supabaseUrl, serviceKey, {
+      auth: { persistSession: false },
+    });
+    return serverClient;
+  } catch (err) {
+    console.warn('Failed to initialize Supabase client:', err);
+    return null;
+  }
+}
+
+export function getBrowserSupabaseClient(): SupabaseClient | null {
+  if (typeof window === 'undefined') return getSupabaseClient();
   if (browserClient) return browserClient;
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  if (!supabaseUrl || !anonKey || supabaseUrl.includes('placeholder') || supabaseUrl.includes('your-supabase-project')) {
+  if (!supabaseUrl || !anonKey || supabaseUrl.includes('your-supabase-url')) {
     return null;
   }
 
@@ -67,46 +66,58 @@ class DynamicVectorStore {
     }> = [
       {
         id: 'doc-sla-escalation',
-        title: 'Customer Support SLA & Escalation Guidelines',
-        fileName: '01_customer_support_sla_and_escalation.md',
+        title: 'Customer Support SLA & Incident Escalation Policy',
+        fileName: '01_service_level_agreement_and_incident_escalation.md',
         category: 'customer_support',
         chunks: [
-          `# Enterprise Customer Support SLA & Escalation Guidelines\nPriority 1 (P1 - Critical Outage): System down or core AI RAG service unresponsive for all users. Target Initial Response: Under 15 Minutes. Target Resolution Time: Under 2 Hours. Support Coverage: 24/7/365 Dedicated Phone & High-Priority Channel.`,
-          `Priority 2 (P2 - Major Degraded Service): Core features impacted, severe latency (>2000ms), or single LLM provider rate limit. Target Initial Response: Under 1 Hour. Target Resolution Time: Under 6 Hours. Support Coverage: 24/7 Email & Slack Connect.`,
-          `Priority 3 (P3 - Minor Issue): Individual user access issues, document parsing errors, minor UI bugs. Target Response: Under 4 Business Hours. Support Coverage: Mon-Fri, 8 AM - 8 PM EST.`,
-          `Escalation Matrix: Tier 1 (L1 Support Specialist) -> Tier 2 (L2 Systems & RAG Engineer) -> Tier 3 (L3 Lead AI Architect & Infrastructure Lead) -> Executive Escalation: Support Director (support-escalations@antigravity.ai).`
+          `# Enterprise Customer Support SLA & Incident Escalation Policy\nPriority 1 (P1 - Critical Outage): System down or core service unresponsive for all users. Initial Response Target: Under 15 Minutes. Target Resolution Time: Under 2 Hours. Coverage: 24/7/365 Dedicated Phone & Slack Connect.`,
+          `Priority 2 (P2 - Major Degraded Service): Core feature degradation or severe latency (>2000ms). Initial Response Target: Under 1 Hour. Target Resolution Time: Under 6 Hours. Coverage: 24/7 Email & Slack.`,
+          `Priority 3 (P3 - Moderate Issue): Non-critical bug or single user access issue. Initial Response Target: Under 4 Business Hours. Coverage: Mon-Fri, 8 AM - 8 PM EST.`,
+          `Incident Escalation Ladder: Level 1 (Tier 1 Support Specialist) -> Level 2 (Tier 2 Support Engineer) -> Level 3 (Tier 3 AI Solutions Architect) -> Level 4 (VP of Customer Operations, executive-escalations@antigravity.ai).`
         ]
       },
       {
         id: 'doc-billing-refund',
-        title: 'Subscription Billing & Refund Policy',
+        title: 'Subscription Billing, Refund & Data Retention Policy',
         fileName: '02_billing_refund_and_subscription_policy.md',
         category: 'customer_support',
         chunks: [
-          `# Subscription Billing, Refund, & Cancellation Policy\nSubscription Plans: Developer / Starter Plan ($29/mo - 50 docs, 10k queries). Pro Team Plan ($149/mo - 500 docs, 100k queries). Enterprise Custom Plan (Custom pricing, unlimited docs & queries, 99.95% SLA).`,
-          `30-Day Money-Back Guarantee Eligibility: Customers receive a 100% full refund within 30 days of initial purchase if there is an unresolved technical failure or if service uptime drops below 99.0%.`,
-          `Account Cancellation & Data Retention: Cancel anytime via billing portal or billing@antigravity.ai. Access remains active through billing period. Uploaded documents and vector embeddings are scrubbed 30 days post-cancellation per GDPR & SOC2.`
+          `# Subscription Billing, Payment, Refund & Data Retention Policy\nSubscription Plans: Developer Starter ($29/mo - 50 docs, 10k queries). Pro Team ($149/mo - 500 docs, 100k queries). Enterprise Custom (Custom pricing, unlimited documents, 99.95% SLA).`,
+          `30-Day Money-Back Guarantee: All new subscriptions qualify for a 100% full refund within 30 days of initial purchase if there is an unresolved technical issue or system uptime drops below 99.0%.`,
+          `Cancellation & GDPR Data Purge: Cancel anytime via billing portal or billing@antigravity.ai. On Day 30 post-cancellation, all uploaded documents and vector embeddings are permanently purged per GDPR Article 17 & SOC 2.`
         ]
       },
       {
-        id: 'doc-tech-faq',
-        title: 'Technical Support & Troubleshooting FAQ',
-        fileName: '03_technical_support_and_troubleshooting_faq.md',
-        category: 'tech_specs',
+        id: 'doc-security-privacy',
+        title: 'Account Security, Access Control & Privacy Policy',
+        fileName: '03_account_security_and_privacy_policy.md',
+        category: 'customer_support',
         chunks: [
-          `# Technical Support & Troubleshooting FAQ\nQ1: How does the Smart AI Router handle HTTP 429 Rate Limits?\nWhen Groq, Gemini, or OpenRouter models hit HTTP 429 rate limit or quota exceeded, the router puts that model on 60-second cooldown and switches to the next model (llama-3.3-70b -> llama-4-scout -> qwen3-32b). If all models of a provider fail, it fails over to the next provider (Groq -> Gemini -> OpenRouter).`,
-          `Q2: Supported Document Formats & Limits: Supports .pdf, .docx, .txt, and .md files up to 25MB per document.`,
-          `Q4: API Key Configuration: Configure GROQ_API_KEY, GEMINI_API_KEY, and OPENROUTER_API_KEY in .env.local and restart Next.js server.`
+          `# Account Security, Access Control & Privacy Policy\nRole-Based Access Control (RBAC): Customer role is restricted to support chat. Admin role has exclusive access to document management, analytics, and system settings.`,
+          `Authentication Security: Mandatory Multi-Factor Authentication (MFA) for admin accounts. Enterprise SAML 2.0 / OAuth 2.0 SSO support (Okta, Azure AD, Google Workspace). Password lockout occurs after 5 failed attempts for 15 minutes.`,
+          `Data Encryption: All data in transit is encrypted via TLS 1.3. Documents and vector embeddings at rest are encrypted via AES-256. Database tenant isolation enforced by PostgreSQL Row Level Security (RLS).`
         ]
       },
       {
         id: 'doc-warranty-returns',
-        title: 'Product Return & Warranty Guidelines',
-        fileName: '04_product_return_and_warranty_guidelines.md',
-        category: 'product_guide',
+        title: 'Product Return, Hardware Warranty & RMA Guidelines',
+        fileName: '04_product_return_warranty_and_rma_guide.md',
+        category: 'customer_support',
         chunks: [
-          `# Product Return, Exchange, & Warranty Guidelines\n30-Day Return Window: Customers may return hardware devices (Antigravity AI Edge Gateways) within 30 days of delivery for a full refund or exchange with valid RMA number.`,
-          `1-Year Limited Hardware Warranty: Covers component failure (motherboard, memory, neural accelerator cards) and power supply unit failures. Does not cover liquid damage or unauthorized chassis modifications.`
+          `# Product Return, Hardware Warranty & RMA Guidelines\n30-Day Return Window: Customers may return unopened, undamaged, or defective hardware within 30 days of delivery for a 100% full refund or direct replacement.`,
+          `1-Year Limited Warranty: Covers manufacturing defects (motherboard failure, power supply issues, component defects) for 12 months from delivery date under the FTC Magnuson-Moss Warranty Act.`,
+          `RMA Process: Request RMA via rma@antigravity.ai. Receive prepaid shipping label within 4 hours. Replacement unit dispatches via 2-day air upon carrier scan.`
+        ]
+      },
+      {
+        id: 'doc-tech-troubleshooting',
+        title: 'Customer Technical Support & Troubleshooting Guide',
+        fileName: '05_technical_troubleshooting_and_faq_guide.md',
+        category: 'tech_specs',
+        chunks: [
+          `# Customer Technical Support & Troubleshooting FAQ Guide\nPassword Reset: Click 'Forgot Password' on sign in screen, enter email, and use the 15-minute reset link. Passwords must be at least 10 characters long.`,
+          `Account Lockout: Accounts auto-lock for 15 minutes after 5 consecutive failed login attempts, or can be unlocked via email verification.`,
+          `High Latency Troubleshooting: Latency spikes >2000ms trigger automatic failovers. If slow response times persist past 5 minutes, clear browser cache or try an alternate network.`
         ]
       }
     ];
@@ -176,35 +187,35 @@ class DynamicVectorStore {
       if (Array.isArray(queryVector) && chunk.embedding && chunk.embedding.length === queryVector.length) {
         sim = this.cosineSimilarity(queryVector, chunk.embedding);
       } else {
-        // High quality fallback keyword & semantic similarity matching
         const contentLower = chunk.content.toLowerCase();
-        const keywords = ['support', 'sla', 'escalation', 'billing', 'refund', 'policy', 'return', 'warranty', 'rate limit', '429', 'groq', 'gemini', 'openrouter', 'price', 'plan', 'cancel'];
-        let hits = 0;
-        keywords.forEach(kw => {
-          if (contentLower.includes(kw)) hits++;
-        });
-        sim = 0.45 + (hits * 0.12);
+        if (queryLower && contentLower.includes(queryLower)) {
+          sim = 0.88;
+        } else {
+          sim = 0.65;
+        }
       }
-      return { ...chunk, similarity: Math.min(0.98, sim) };
+      return { chunk, sim };
     });
 
+    scored.sort((a, b) => b.sim - a.sim);
+
     return scored
-      .filter(c => (c.similarity ?? 0) >= matchThreshold)
-      .sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))
-      .slice(0, matchCount);
+      .filter(s => s.sim >= matchThreshold)
+      .slice(0, matchCount)
+      .map(s => ({ ...s.chunk, similarity: s.sim }));
   }
 
-  private cosineSimilarity(a: number[], b: number[]): number {
-    let dot = 0;
+  private cosineSimilarity(vecA: number[], vecB: number[]): number {
+    let dotProduct = 0;
     let normA = 0;
     let normB = 0;
-    for (let i = 0; i < a.length; i++) {
-      dot += a[i] * b[i];
-      normA += a[i] * a[i];
-      normB += b[i] * b[i];
+    for (let i = 0; i < vecA.length; i++) {
+      dotProduct += vecA[i] * vecB[i];
+      normA += vecA[i] * vecA[i];
+      normB += vecB[i] * vecB[i];
     }
-    const denominator = Math.sqrt(normA) * Math.sqrt(normB);
-    return denominator === 0 ? 0 : dot / denominator;
+    if (normA === 0 || normB === 0) return 0;
+    return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
   }
 }
 

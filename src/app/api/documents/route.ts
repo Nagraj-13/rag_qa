@@ -52,6 +52,98 @@ export async function POST(req: NextRequest) {
     // Handle JSON Demo Bundle Import
     if (contentType.includes('application/json')) {
       const jsonBody = await req.json().catch(() => ({}));
+      if (jsonBody.action === 'import_demo_rag') {
+        const ragDemoDocs = [
+          {
+            title: 'Customer Support SLA & Incident Escalation Policy',
+            fileName: 'docs/rag_sample_word_docs/01_Customer_Support_SLA_and_Escalation.docx',
+            category: 'customer_support' as DocumentCategory,
+            chunks: [
+              `Priority 1 (P1 Critical Outage): System down for all users. Initial response under 15 minutes, resolution under 2 hours. Coverage: 24/7 Phone & Slack Connect.`,
+              `Priority 2 (P2 Major Degraded Service): Severe latency (>2000ms) or single provider failover. Initial response under 1 hour, resolution under 6 hours.`,
+              `Multi-Tiered Incident Escalation Ladder: Level 1 (Tier 1 Support Specialist) -> Level 2 (Tier 2 Systems Engineer) -> Level 3 (Tier 3 AI Solutions Architect) -> Level 4 (VP of Customer Operations: executive-escalations@antigravity.ai).`
+            ]
+          },
+          {
+            title: 'Subscription Billing, Payment, Refund & Data Retention Policy',
+            fileName: 'docs/rag_sample_word_docs/02_Billing_Refund_and_Subscription_Policy.docx',
+            category: 'customer_support' as DocumentCategory,
+            chunks: [
+              `Subscription Plans: Developer Starter ($29/mo), Pro Team ($149/mo), Enterprise Custom (Custom SLA & dedicated router).`,
+              `30-Day Money-Back Guarantee: All new subscriptions qualify for a 100% full money-back refund within 30 calendar days if technical issues occur or uptime < 99.0%.`,
+              `Cancellation & GDPR / SOC 2 Data Purge: Grace Period (Days 0-30). Permanent Purge (Day 30): All uploaded documents, text chunks, vector embeddings, and logs are unrecoverably deleted.`
+            ]
+          },
+          {
+            title: 'Account Security, Access Control & Privacy Policy',
+            fileName: 'docs/rag_sample_word_docs/03_Account_Security_and_Privacy_Policy.docx',
+            category: 'customer_support' as DocumentCategory,
+            chunks: [
+              `Role-Based Access Control (RBAC): Customer role is restricted to support chat. Admin role has exclusive access to document management, analytics, and system settings.`,
+              `Authentication Security: Multi-Factor Authentication (MFA) mandatory for admin accounts. Enterprise SAML 2.0 / OAuth 2.0 SSO support (Okta, Azure AD, Google Workspace). Password lockout after 5 failed attempts.`,
+              `Data Encryption & Tenant Isolation: Data in transit encrypted via TLS 1.3. Vector embeddings at rest encrypted via AES-256 GCM. Multi-tenant database isolation enforced via PostgreSQL Row Level Security (RLS).`
+            ]
+          },
+          {
+            title: 'Product Return, Hardware Warranty & RMA Guidelines',
+            fileName: 'docs/rag_sample_word_docs/04_Product_Return_Warranty_and_RMA_Guide.docx',
+            category: 'customer_support' as DocumentCategory,
+            chunks: [
+              `30-Day Return Window: Customers may return unopened, undamaged, or defective hardware items within 30 days of delivery for a 100% full refund or direct unit replacement.`,
+              `1-Year Limited Hardware Warranty: Covers manufacturing defects (motherboard failure, power supply, component faults) for 12 months from delivery date under the FTC Magnuson-Moss Act.`,
+              `RMA Steps: Request RMA via rma@antigravity.ai. Receive prepaid shipping label within 4 hours. Replacement dispatches via 2-day air upon carrier scan.`
+            ]
+          },
+          {
+            title: 'Customer Technical Support & Troubleshooting Manual',
+            fileName: 'docs/rag_sample_word_docs/05_Customer_Troubleshooting_and_FAQ_Manual.docx',
+            category: 'tech_specs' as DocumentCategory,
+            chunks: [
+              `Password Reset: Click 'Forgot Password' on the login screen, enter email, and follow the link sent to your inbox within 15 minutes.`,
+              `Account Lockout: Accounts auto-lock for 15 minutes after 5 consecutive failed login attempts, or unlock via instant email link.`,
+              `Latency & Connection Troubleshooting: Latency spikes >2000ms trigger automatic failovers. If slow responses persist past 5 minutes, clear browser cache or test on an alternate network.`
+            ]
+          }
+        ];
+
+        const importedDocs: DocumentItem[] = [];
+        for (const doc of ragDemoDocs) {
+          const docId = `doc-rag-${Math.random().toString(36).substring(2, 9)}`;
+          const nowStr = new Date().toISOString();
+
+          const item: DocumentItem = {
+            id: docId,
+            title: doc.title,
+            fileName: doc.fileName,
+            fileType: 'docx',
+            fileSize: 37500,
+            chunkCount: doc.chunks.length,
+            category: doc.category,
+            createdAt: nowStr,
+            isAdmin: true,
+            isOKF: false,
+          };
+
+          const chunks: DocumentChunk[] = doc.chunks.map((content, idx) => ({
+            id: `${docId}-chk-${idx}`,
+            documentId: docId,
+            content,
+            metadata: {
+              fileName: doc.fileName,
+              title: doc.title,
+              chunkIndex: idx,
+              category: doc.category,
+              isOKF: false,
+            },
+          }));
+
+          localVectorStore.addDocument(item, chunks);
+          importedDocs.push(item);
+        }
+
+        return NextResponse.json({ success: true, count: importedDocs.length, documents: importedDocs });
+      }
+
       if (jsonBody.action === 'import_demo_okf') {
         const demoDocs = [
           {
