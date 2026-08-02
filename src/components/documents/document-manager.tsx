@@ -179,6 +179,33 @@ export const DocumentManager: React.FC<DocumentManagerProps> = ({ userId, knowle
     }
   };
 
+  const handleImportDemoRAG = async () => {
+    setUploading(true);
+    setError(null);
+    setUploadStatus('Importing sample Word (.docx) customer support documents...');
+
+    try {
+      const res = await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'import_demo_rag' }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to import demo Word documents');
+      }
+
+      setUploadStatus(`Imported ${data.count} sample Word (.docx) customer support documents!`);
+      await fetchDocuments();
+    } catch (err: any) {
+      setError(err.message || 'Failed to import demo Word documents');
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const handleImportDemoOKF = async () => {
     setUploading(true);
     setError(null);
