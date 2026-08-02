@@ -20,6 +20,15 @@ function resolveRole(email: string): UserRole {
 }
 
 export async function getCurrentUser(): Promise<UserProfile | null> {
+  if (typeof window !== 'undefined') {
+    const cached = localStorage.getItem('rag_user_session');
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch (e) { }
+    }
+  }
+
   const supabase = getBrowserSupabaseClient();
   if (!supabase) return null;
 
