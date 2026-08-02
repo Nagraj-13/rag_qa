@@ -286,18 +286,20 @@ Output ONLY the JSON array and nothing else.`;
       if (retrievedChunks.length > 0) {
         const contextText = retrievedChunks.map((c, i) => `[Document: ${c.metadata?.fileName || 'Knowledge Base'}]\n${c.content}`).join('\n\n');
 
-        const okfSystemPrompt = `You are an Enterprise Support Assistant trained in Open Knowledge Format (OKF) / LLM Wiki architecture.
-Synthesize an authoritative, structured response using the provided document context below.
+        const okfSystemPrompt = `You are Antigravity's Chief Support Specialist and Knowledge Engineer.
+Your goal is to provide a complete, clear, and engaging answer that fully resolves the user's question using ONLY the retrieved context documents below.
 
 Document Context:
 ${contextText}
 
-Instructions for Open Knowledge Format (OKF) Response:
-1. Format your response into structured Markdown using clear Wiki headers:
-   - "### 📖 Executive Summary & Overview" (Concise direct answer)
-   - "### 💡 Core Specifications & Policy Details" (Structured bullet points detailing exact rules, SLAs, prices, or timelines)
-2. Be helpful, professional, and precise.
-3. Do NOT mention internal database queries, AI model names, or vector thresholds.`;
+Instructions for OKF Response Generation:
+1. Thoroughly analyze all provided document chunks. Extract every relevant rule, policy, step, contact detail, timeline, and SLA specification.
+2. Structure your answer using clear OKF Markdown headers:
+   - "### 📖 Executive Summary & Overview": A warm, engaging, direct answer to the user's question.
+   - "### 💡 Core Specifications & Key Policy Rules": Structured bullet points detailing precise policies, deadlines, figures, or step-by-step procedures.
+   - "### 🛠️ Actionable Next Steps": Clear instructions on what the user should do next or how to proceed.
+3. Keep your tone professional, empathetic, warm, and highly engaging. Use clean formatting, bold text, and bullet points.
+4. Do NOT guess or hallucinate any facts not mentioned in the context. Do NOT mention internal AI models or vector databases.`;
 
         const { text: rawAnswer, telemetry } = await smartRouter.executeWithFailover(okfSystemPrompt, message);
         const { formattedAnswer, webReferences } = OpenKnowledgeEngine.formatOpenKnowledgeWiki(rawAnswer, message, citations);
@@ -438,16 +440,18 @@ Instructions for Open Knowledge Format (OKF) Response:
     if (retrievedChunks.length > 0) {
       const contextText = retrievedChunks.map((c, i) => `[Source ${i + 1}: ${c.metadata?.fileName || 'Document'}]\n${c.content}`).join('\n\n');
 
-      const systemPrompt = `You are a customer support assistant. Answer the customer's question accurately using the provided internal documents.
+      const systemPrompt = `You are  Senior Customer Support Assistant.
+Your objective is to provide a complete, highly engaging, and clear answer that directly resolves the user's question using ONLY the provided support documents.
 
 Context Documents:
 ${contextText}
 
-Instructions:
-1. Answer ONLY based on the provided context. If the context doesn't contain the answer, say so.
-2. Be helpful, professional, and empathetic.
-3. Format your response in clear Markdown.
-4. Do NOT mention internal systems, vector databases, or AI models.`;
+Instructions for Answer Generation:
+1. Thoroughly extract all relevant facts, policies, steps, contact info, timelines, and rules from the provided context chunks.
+2. Structure your response into clean, engaging Markdown with bold headers, bullet points, and callout sections where appropriate.
+3. Keep your tone warm, empathetic, professional, and clear.
+4. Highlight key steps, contact emails, SLA response windows, or policy conditions in structured lists so the answer is effortless to read and act upon.
+5. Do NOT mention internal database queries, AI model names, or vector thresholds.`;
 
       const { text: rawAnswer, telemetry } = await smartRouter.executeWithFailover(systemPrompt, message);
 

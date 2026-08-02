@@ -1,200 +1,236 @@
 import os
+import re
 import docx
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
 
-output_dir = os.path.join(os.getcwd(), 'docs', 'rag_sample_word_docs')
-os.makedirs(output_dir, exist_ok=True)
+# Define paths
+base_dir = os.getcwd()
+okf_dir = os.path.join(base_dir, 'docs', 'okf_wiki')
+rag_dir = os.path.join(base_dir, 'docs', 'rag_sample_word_docs')
 
-def create_docx(filename, title, sections):
+# Step 1: Delete all current docx files in the RAG directory
+print("[CLEAN] Cleaning up old DOCX files in RAG directory...")
+if os.path.exists(rag_dir):
+    for f in os.listdir(rag_dir):
+        if f.endswith('.docx'):
+            os.remove(os.path.join(rag_dir, f))
+else:
+    os.makedirs(rag_dir, exist_ok=True)
+
+# File mapping from OKF Markdown files to RAG DOCX files
+file_mappings = {
+    os.path.join('customer_support', '01_sla_and_escalation.md'): '01_Customer_Support_SLA_and_Escalation.docx',
+    os.path.join('billing', '02_refund_and_subscription.md'): '02_Billing_Refund_and_Subscription_Policy.docx',
+    os.path.join('technical', '03_troubleshooting_faq.md'): '03_Customer_Troubleshooting_and_FAQ_Manual.docx',
+    os.path.join('returns', '04_warranty_and_rma.md'): '04_Product_Return_Warranty_and_RMA_Guide.docx',
+    os.path.join('security', '05_account_security_and_privacy.md'): '05_Account_Security_and_Privacy_Policy.docx',
+    os.path.join('products', '06_products_and_services.md'): '06_Products_and_Services_Catalog.docx',
+}
+
+def set_cell_margins(cell, top=100, bottom=100, left=150, right=150):
+    """Set cell padding in twentieths of a point (dxa)."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcMar = OxmlElement('w:tcMar')
+    for m, val in [('w:top', top), ('w:bottom', bottom), ('w:left', left), ('w:right', right)]:
+        node = OxmlElement(m)
+        node.set(qn('w:w'), str(val))
+        node.set(qn('w:type'), 'dxa')
+        tcMar.append(node)
+    tcPr.append(tcMar)
+
+def parse_markdown_to_docx(md_path, docx_path):
+    print(f"[PROCESS] processing: {os.path.basename(md_path)} -> DOCX: {os.path.basename(docx_path)}")
+    
+    with open(md_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # Split YAML frontmatter and body
+    parts = content.split('---')
+    if len(parts) >= 3:
+        body = '---'.join(parts[2:]).strip()
+    else:
+        body = content.strip()
+
     doc = docx.Document()
-    
-    # Title
-    p_title = doc.add_paragraph()
-    p_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_title = p_title.add_run(title)
-    run_title.font.name = 'Arial'
-    run_title.font.size = Pt(20)
-    run_title.font.bold = True
-    run_title.font.color.rgb = RGBColor(30, 41, 59) # Slate 800
-    
-    doc.add_paragraph() # Spacing
-    
-    for section_heading, paragraphs in sections:
-        # Heading 2
-        p_head = doc.add_paragraph()
-        run_head = p_head.add_run(section_heading)
-        run_head.font.name = 'Arial'
-        run_head.font.size = Pt(14)
-        run_head.font.bold = True
-        run_head.font.color.rgb = RGBColor(79, 70, 229) # Indigo 600
-        
-        for p_text in paragraphs:
+
+    # Style definitions
+    style_normal = doc.styles['Normal']
+    font = style_normal.font
+    font.name = 'Arial'
+    font.size = Pt(10.5)
+    font.color.rgb = RGBColor(51, 65, 85) # Slate 700
+
+    lines = body.split('\n')
+    in_table = False
+    table_headers = []
+    table_rows = []
+
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+
+        # Handle headings
+        if line.startswith('#'):
+            # Close existing table if any
+            if in_table:
+                create_word_table(doc, table_headers, table_rows)
+                in_table = False
+                table_headers = []
+                table_rows = []
+
+            level = len(line) - len(line.lstrip('#'))
+            title_text = line.lstrip('#').strip()
             p = doc.add_paragraph()
-            run_p = p.add_run(p_text)
-            run_p.font.name = 'Arial'
-            run_p.font.size = Pt(11)
-            run_p.font.color.rgb = RGBColor(51, 65, 85) # Slate 700
+            p.paragraph_format.space_before = Pt(12)
+            p.paragraph_format.space_after = Pt(4)
+            run = p.add_run(title_text)
+            run.font.name = 'Arial'
+            run.font.bold = True
+
+            if level == 1:
+                run.font.size = Pt(18)
+                run.font.color.rgb = RGBColor(15, 23, 42) # Slate 900
+            elif level == 2:
+                run.font.size = Pt(14)
+                run.font.color.rgb = RGBColor(79, 70, 229) # Indigo 600
+            else:
+                run.font.size = Pt(12)
+                run.font.color.rgb = RGBColor(15, 23, 42) # Slate 900
             
-        doc.add_paragraph() # Spacing
+            i += 1
+            continue
+
+        # Handle tables
+        if line.startswith('|'):
+            # Check if it is a separator line (e.g. |---|---|)
+            if re.match(r'^\|[\s\-\|:]+\|$', line):
+                i += 1
+                continue
+
+            cells = [c.strip() for c in line.split('|')[1:-1]]
+            if not in_table:
+                in_table = True
+                table_headers = cells
+            else:
+                table_rows.append(cells)
+            i += 1
+            continue
+        else:
+            if in_table:
+                # Table ended
+                create_word_table(doc, table_headers, table_rows)
+                in_table = False
+                table_headers = []
+                table_rows = []
+
+        # Handle lists
+        if line.startswith('- ') or line.startswith('* '):
+            item_text = line[2:].strip()
+            p = doc.add_paragraph(style='List Bullet')
+            p.paragraph_format.space_after = Pt(3)
+            # Support bold markdown inside list items
+            add_markdown_run(p, item_text)
+            i += 1
+            continue
+
+        # Handle numbered lists
+        match_num = re.match(r'^(\d+)\.\s+(.*)$', line)
+        if match_num:
+            item_text = match_num.group(2).strip()
+            p = doc.add_paragraph(style='List Number')
+            p.paragraph_format.space_after = Pt(3)
+            add_markdown_run(p, item_text)
+            i += 1
+            continue
+
+        # Handle empty lines
+        if not line:
+            i += 1
+            continue
+
+        # Handle horizontal rule
+        if line == '---':
+            p = doc.add_paragraph()
+            run = p.add_run("____________________________________________________")
+            run.font.color.rgb = RGBColor(226, 232, 240) # Slate 200
+            i += 1
+            continue
+
+        # Regular paragraph
+        p = doc.add_paragraph()
+        p.paragraph_format.space_after = Pt(6)
+        p.paragraph_format.line_spacing = 1.15
+        add_markdown_run(p, line)
+        i += 1
+
+    # Close trailing table if document ends
+    if in_table:
+        create_word_table(doc, table_headers, table_rows)
+
+    # Save document
+    doc.save(docx_path)
+
+def add_markdown_run(paragraph, text):
+    """Simple parser for bold inline markdown (**text**)."""
+    parts = re.split(r'(\*\*.*?\*\*)', text)
+    for part in parts:
+        if part.startswith('**') and part.endswith('**'):
+            run = paragraph.add_run(part[2:-2])
+            run.font.bold = True
+        else:
+            paragraph.add_run(part)
+
+def create_word_table(doc, headers, rows):
+    if not headers:
+        return
+    col_count = len(headers)
+    table = doc.add_table(rows=1, cols=col_count)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = 'Table Grid'
+
+    # Set headers
+    hdr_cells = table.rows[0].cells
+    for col_idx, header_text in enumerate(headers):
+        hdr_cells[col_idx].text = header_text
+        set_cell_margins(hdr_cells[col_idx], top=120, bottom=120, left=150, right=150)
         
-    filepath = os.path.join(output_dir, filename)
-    doc.save(filepath)
-    print(f"[OK] Created Word Document: {filepath}")
+        # Style Header Run
+        p = hdr_cells[col_idx].paragraphs[0]
+        p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.space_before = Pt(0)
+        for run in p.runs:
+            run.font.bold = True
+            run.font.size = Pt(9.5)
+            run.font.color.rgb = RGBColor(15, 23, 42) # Slate 900
 
-# 1. SLA Document
-create_docx(
-    "01_Customer_Support_SLA_and_Escalation.docx",
-    "Enterprise Customer Support SLA & Escalation Policy",
-    [
-        (
-            "1. Executive Overview & Availability Guarantees",
-            [
-                "Antigravity Enterprise provides 24/7 technical support, 99.95% availability commitments, and structured escalation workflows for all enterprise knowledge base services.",
-                "System uptime is monitored continuously across all global endpoints. If monthly availability falls below 99.95%, qualified Enterprise accounts receive pro-rated service credits."
-            ]
-        ),
-        (
-            "2. SLA Priority Classification & Response Targets",
-            [
-                "Priority 1 (P1 - Critical Outage): Complete core system downtime affecting all users. Initial Response Target: Under 15 Minutes. Target Resolution Time: Under 2 Hours. Support Coverage: 24/7/365 Dedicated Phone & Slack Connect.",
-                "Priority 2 (P2 - Major Degraded Service): Partial service degradation or latency exceeding 2000ms. Initial Response Target: Under 1 Hour. Target Resolution Time: Under 6 Hours. Support Coverage: 24/7 Email & Slack.",
-                "Priority 3 (P3 - Moderate Issue): Non-critical bug or single user permission issue. Initial Response Target: Under 4 Business Hours. Target Resolution Time: Under 24 Hours. Support Coverage: Mon-Fri 8 AM - 8 PM EST."
-            ]
-        ),
-        (
-            "3. Multi-Tiered Incident Escalation Ladder",
-            [
-                "Level 1 Triage: Tier 1 Support Specialist collects error logs, status codes, and reproduction steps.",
-                "Level 2 Technical Escalation: Tier 2 Engineer engaged after 30 minutes for P1 or 2 hours for P2 outages to debug database connection pools and router states.",
-                "Level 3 Engineering: Tier 3 AI Solutions Architect applies code hotfixes, schema migrations, or provider overrides.",
-                "Level 4 Executive Escalation: VP of Customer Operations (executive-escalations@antigravity.ai) receives direct alert for unresolved P1 outages past 90 minutes."
-            ]
-        )
-    ]
-)
+    # Set rows
+    for row_data in rows:
+        row_cells = table.add_row().cells
+        # Handle cases where row might have fewer cells than headers
+        for col_idx in range(min(col_count, len(row_data))):
+            row_cells[col_idx].text = row_data[col_idx]
+            set_cell_margins(row_cells[col_idx], top=100, bottom=100, left=150, right=150)
+            
+            p = row_cells[col_idx].paragraphs[0]
+            p.paragraph_format.space_after = Pt(0)
+            p.paragraph_format.space_before = Pt(0)
+            for run in p.runs:
+                run.font.size = Pt(9.5)
 
-# 2. Billing & Refund Document
-create_docx(
-    "02_Billing_Refund_and_Subscription_Policy.docx",
-    "Subscription Billing, Payment, Refund & Data Retention Policy",
-    [
-        (
-            "1. Subscription Tiers & Pricing Specs",
-            [
-                "Developer / Starter Plan ($29/month): Up to 50 uploaded documents (25MB max size) and 10,000 RAG queries per month. Includes standard email support.",
-                "Pro Team Plan ($149/month): Up to 500 uploaded documents (100MB max size) and 100,000 RAG queries per month. Includes priority email and Slack support.",
-                "Enterprise Custom Plan (Custom Quote): Unlimited uploaded documents and queries, 99.95% SLA, dedicated model router, and 24/7 phone support."
-            ]
-        ),
-        (
-            "2. 30-Day Money-Back Guarantee",
-            [
-                "All new subscription plans qualify for a 100% full money-back refund within 30 calendar days of initial purchase.",
-                "Refund requests must be submitted via the Billing Portal or by emailing billing@antigravity.ai. Approved refunds are credited back to the original payment method within 3 to 5 business days."
-            ]
-        ),
-        (
-            "3. Cancellation & Automated GDPR / SOC 2 Data Purging",
-            [
-                "Subscribers may cancel their subscription anytime via Account Settings -> Subscription -> Cancel Plan. Access remains active through the current billing period.",
-                "Grace Period (Days 0-30): Documents and vector embeddings remain safely archived for instant account reactivation.",
-                "Permanent Purge (Day 30): All uploaded documents, parsed text chunks, vector embeddings, and telemetry logs are permanently and unrecoverably erased from all primary servers and database backups in compliance with GDPR Article 17 and SOC 2 Type II regulations."
-            ]
-        )
-    ]
-)
+    doc.add_paragraph() # Spacing below table
 
-# 3. Security & Privacy Document
-create_docx(
-    "03_Account_Security_and_Privacy_Policy.docx",
-    "Account Security, Access Control & Privacy Policy",
-    [
-        (
-            "1. Role-Based Access Control (RBAC)",
-            [
-                "Customer Role: Authenticated or public users restricted exclusively to sending support queries to the chatbot interface. Cannot view vector stores, telemetry, or admin settings.",
-                "Admin Role: Designated platform administrators with exclusive rights to manage knowledge base documents, configure router strategies, toggle OKF/RAG modes, and inspect analytics."
-            ]
-        ),
-        (
-            "2. Authentication & Password Protection",
-            [
-                "Multi-Factor Authentication (MFA): Mandatory for all admin accounts using TOTP authenticator apps or hardware keys.",
-                "Password Security: Passwords must be at least 10 characters long with upper/lowercase letters, numbers, and symbols.",
-                "Account Lockout: Accounts auto-lock for 15 minutes after 5 consecutive failed login attempts to prevent brute-force attacks."
-            ]
-        ),
-        (
-            "3. Data Encryption & Tenant Isolation",
-            [
-                "Encryption in Transit: All communications use TLS 1.3 encryption with ECDHE key exchanges.",
-                "Encryption at Rest: Uploaded documents and vector embeddings are stored using AES-256 GCM encryption.",
-                "Multi-Tenant Isolation: Database tenant boundaries are strictly enforced via PostgreSQL Row Level Security (RLS) policies."
-            ]
-        )
-    ]
-)
+# Execute mappings
+for rel_md, target_docx in file_mappings.items():
+    md_full = os.path.join(okf_dir, rel_md)
+    docx_full = os.path.join(rag_dir, target_docx)
+    
+    if os.path.exists(md_full):
+        parse_markdown_to_docx(md_full, docx_full)
+    else:
+        print(f"[WARN] Source OKF file not found: {md_full}")
 
-# 4. Returns & Warranty Document
-create_docx(
-    "04_Product_Return_Warranty_and_RMA_Guide.docx",
-    "Product Return, Hardware Warranty & RMA Guidelines",
-    [
-        (
-            "1. Return & Exchange Policy Window",
-            [
-                "30-Day Return Window: Customers may return unopened, undamaged, or defective hardware items within 30 days of delivery for a full refund or direct unit replacement.",
-                "Items must be returned in original packaging with included power cables, mounting brackets, and documentation."
-            ]
-        ),
-        (
-            "2. 1-Year Limited Hardware Warranty",
-            [
-                "All hardware units carry a 1-Year Limited Warranty covering manufacturing defects, power supply failures, and component breakdowns under normal operating conditions.",
-                "Compliant with the US FTC Magnuson-Moss Warranty Act and European Union Consumer Protection Directives."
-            ]
-        ),
-        (
-            "3. Return Merchandise Authorization (RMA) Steps",
-            [
-                "Step 1: Contact support or email rma@antigravity.ai with the product serial number and description of the issue.",
-                "Step 2: Our logistics team issues an official RMA tracking code and prepaid shipping label within 4 business hours.",
-                "Step 3: Securely package the unit and drop off at an authorized carrier shipment center.",
-                "Step 4: Once scanned by the carrier, a replacement unit is dispatched via 2-day expedited air delivery."
-            ]
-        )
-    ]
-)
-
-# 5. Customer Troubleshooting Manual
-create_docx(
-    "05_Customer_Troubleshooting_and_FAQ_Manual.docx",
-    "Customer Technical Support & Troubleshooting Manual",
-    [
-        (
-            "1. Account & Password Troubleshooting",
-            [
-                "Password Reset: Click 'Forgot Password' on the login screen, enter your email, and follow the link sent to your inbox within 15 minutes.",
-                "Account Unlocking: If locked out due to failed attempts, wait 15 minutes or click 'Unlock via Email' to receive an instant unlock link."
-            ]
-        ),
-        (
-            "2. Latency & Connection Troubleshooting",
-            [
-                "Latency Spikes (>2000ms): Transient latency triggers automatic multi-model router failovers. If slow responses persist past 5 minutes, clear your browser cache or test on an alternate network.",
-                "Slack Connect Support: Pro and Enterprise customers can connect their Slack team via Account Settings -> Support -> Slack Connect."
-            ]
-        ),
-        (
-            "3. General Inquiries & Feature Requests",
-            [
-                "Support Hours: 24/7/365 for P1 critical issues; Mon-Fri 8 AM - 8 PM EST for general technical support.",
-                "Feature Suggestions: Submit feature requests via the Support Portal under Submit Ticket -> Request Feature."
-            ]
-        )
-    ]
-)
-
-print("\n[SUCCESS] All 5 Enterprise Customer Support Word (.docx) files created in docs/rag_sample_word_docs/\n")
+print("\n[SUCCESS] All DOCX documents compiled from latest OKF markdown source files!\n")
