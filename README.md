@@ -1,4 +1,4 @@
-# 🚀 Antigravity — Enterprise AI-Powered RAG Knowledge Platform
+# 🚀  Enterprise AI-Powered RAG Knowledge Platform
 
 <div align="center">
 
