@@ -9,26 +9,26 @@ export interface RouteResult {
 }
 
 /**
- * High-Performance Active Free-Tier Model Configurations
- * Priority: Groq Cloud (Ultra Low Latency <300ms) -> OpenRouter Free -> Gemini
+ * High-Performance Active Free-Tier Model Configurations (Updated Oct 2026)
+ * Priority: Groq Cloud (Ultra Low Latency) -> OpenRouter Free -> Gemini
  */
 export const GROQ_MODELS = [
-  'llama-3.3-70b-versatile',
-  'llama-3.1-8b-instant',
+  'qwen/qwen3.8-27b',
+  'openai/gpt-oss-20b',
+  'openai/gpt-oss-120b'
 ];
 
 export const GEMINI_MODELS = [
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-3.5-flash-lite',
 ];
 
 export const OPENROUTER_MODELS = [
-  'deepseek/deepseek-r1-distill-llama-70b:free',
-  'google/gemini-2.0-flash-exp:free',
-  'qwen/qwen-2.5-coder-32b-instruct:free',
-  'meta-llama/llama-3.1-8b-instruct:free',
-  'mistralai/mistral-7b-instruct:free',
-  'openrouter/auto',
+  'google/gemma-4-31b-it:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'nvidia/nemotron-3.5-lightning:free',
+  'google/gemma-4-26b-a4b-it:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
 ];
 
 function isRateLimitError(status: number, message: string = ''): boolean {
@@ -63,7 +63,7 @@ class SmartAIRouter {
   private providers: Record<LLMProviderId, ProviderHealth> = {
     groq: {
       id: 'groq',
-      name: 'Groq Cloud (Sub-300ms Llama 3.3 70B & 8B)',
+      name: 'Groq Cloud (Exclusive LLM Provider)',
       model: GROQ_MODELS[0],
       isHealthy: true,
       active: true,
@@ -76,10 +76,10 @@ class SmartAIRouter {
     },
     openrouter: {
       id: 'openrouter',
-      name: 'OpenRouter (DeepSeek R1 & Flash Free)',
+      name: 'OpenRouter (Disabled - Groq Only)',
       model: OPENROUTER_MODELS[0],
-      isHealthy: true,
-      active: true,
+      isHealthy: false,
+      active: false,
       consecutiveErrors: 0,
       avgLatencyMs: 450,
       totalRequests: 0,
@@ -89,10 +89,10 @@ class SmartAIRouter {
     },
     gemini: {
       id: 'gemini',
-      name: 'Google Gemini (2.0 Flash)',
+      name: 'Google Gemini (Dedicated to Embeddings)',
       model: GEMINI_MODELS[0],
-      isHealthy: true,
-      active: true,
+      isHealthy: false,
+      active: false,
       consecutiveErrors: 0,
       avgLatencyMs: 520,
       totalRequests: 0,
@@ -212,38 +212,13 @@ class SmartAIRouter {
   }
 
   public selectRouteSequence(): RouteResult {
-    const now = new Date();
-    const activeProviders = Object.values(this.providers).filter(p => {
-      const inCooldown = p.cooldownUntil && new Date(p.cooldownUntil) > now;
-      return p.active && !inCooldown && p.consecutiveErrors < 3;
-    });
-
-    const candidates = activeProviders.length > 0 ? activeProviders : Object.values(this.providers).filter(p => p.active);
-    
-    let primaryProvider: ProviderHealth;
-
-    if (this.strategy === 'round-robin') {
-      primaryProvider = candidates[this.roundRobinIndex % candidates.length];
-      this.roundRobinIndex = (this.roundRobinIndex + 1) % candidates.length;
-    } else if (this.strategy === 'priority-fallback') {
-      primaryProvider = candidates[0] || this.providers.groq;
-    } else {
-      const scored = [...candidates].sort((a, b) => {
-        const scoreA = (a.avgLatencyMs * 0.6) + (a.estimatedCostPer1k * 1000 * 0.4) - (a.successfulRequests > 0 ? 50 : 0);
-        const scoreB = (b.avgLatencyMs * 0.6) + (b.estimatedCostPer1k * 1000 * 0.4) - (b.successfulRequests > 0 ? 50 : 0);
-        return scoreA - scoreB;
-      });
-      primaryProvider = scored[0] || this.providers.groq;
-    }
-
-    const sequence = [primaryProvider.id, ...Object.keys(this.providers).filter(id => id !== primaryProvider.id) as LLMProviderId[]];
-
+    const primaryProvider = this.providers.groq;
     return {
-      provider: primaryProvider.id,
+      provider: 'groq',
       providerName: primaryProvider.name,
       model: primaryProvider.model,
       isFallback: false,
-      attemptedProviders: sequence,
+      attemptedProviders: ['groq'],
     };
   }
 
@@ -384,7 +359,7 @@ class SmartAIRouter {
             'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/json',
           },
-          signal: AbortSignal.timeout(2500),
+          signal: AbortSignal.timeout(8000),
           body: JSON.stringify({
             model,
             messages: [
@@ -450,7 +425,7 @@ class SmartAIRouter {
             'X-Title': 'Smart RAG Router',
             'Content-Type': 'application/json',
           },
-          signal: AbortSignal.timeout(2800),
+          signal: AbortSignal.timeout(8000),
           body: JSON.stringify({
             model,
             messages: [
@@ -512,7 +487,7 @@ class SmartAIRouter {
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          signal: AbortSignal.timeout(2500),
+          signal: AbortSignal.timeout(8000),
           body: JSON.stringify({
             contents: [
               {
