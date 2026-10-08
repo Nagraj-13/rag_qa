@@ -147,11 +147,16 @@ Keep it to 2-3 sentences max. Use Markdown formatting.`;
     // MODE 1: OKF MODE (Open Knowledge Format / LLM Wiki Architecture)
     // =========================================================================
     if (knowledgeMode === 'okf') {
+      console.log('\n========== [RAG DEBUG] OKF MODE START ==========');
+      console.log('[RAG DEBUG] User query:', message);
+      console.log('[RAG DEBUG] Knowledge mode:', knowledgeMode);
       const allDocs: DocumentItem[] = [];
       const supabase = getSupabaseClient();
+      console.log('[RAG DEBUG] Supabase client initialized:', !!supabase);
       if (supabase) {
         try {
-          const { data } = await supabase.from('documents').select('*');
+          const { data, error: docsError } = await supabase.from('documents').select('*');
+          console.log('[RAG DEBUG] Supabase documents query - data count:', data?.length ?? 0, ', error:', docsError ?? 'none');
           if (data) {
             data.forEach(d => {
               allDocs.push({
@@ -167,15 +172,22 @@ Keep it to 2-3 sentences max. Use Markdown formatting.`;
               });
             });
           }
-        } catch { /* use local store */ }
+        } catch (docFetchErr) {
+          console.error('[RAG DEBUG] Error fetching documents:', docFetchErr);
+        }
       }
 
       const localDocs = localVectorStore.getDocuments();
+      console.log('[RAG DEBUG] Local vector store docs count:', localDocs.length);
       localDocs.forEach(ld => {
         if (!allDocs.some(ad => ad.id === ld.id)) {
           allDocs.push(ld);
         }
       });
+      console.log('[RAG DEBUG] Total allDocs (merged) count:', allDocs.length);
+      if (allDocs.length > 0) {
+        console.log('[RAG DEBUG] Document catalog:', allDocs.map(d => ({ title: d.title, fileName: d.fileName, category: d.category })));
+      }
 
       const masterCatalogText = allDocs.map((doc, idx) => (
         `[Document ${idx + 1}] Title: "${doc.title}", File: "${doc.fileName}", Category: "${doc.category}"`
@@ -197,16 +209,26 @@ Respond strictly with a JSON array of matching file names or titles. Example: ["
 Output ONLY the JSON array and nothing else.`;
 
           const { text: navResponse } = await smartRouter.executeWithFailover(navSystemPrompt, message);
+          console.log('[RAG DEBUG] Navigator LLM raw response:', navResponse);
           const jsonMatch = navResponse.match(/\[[\s\S]*\]/);
           if (jsonMatch) {
             targetFiles = JSON.parse(jsonMatch[0]);
+            console.log('[RAG DEBUG] Navigator identified target files:', targetFiles);
+          } else {
+            console.log('[RAG DEBUG] Navigator response did not contain a JSON array');
           }
         } catch (navErr) {
-          console.warn('OKF index navigation LLM call failed, using vector match:', navErr);
+          console.warn('[RAG DEBUG] OKF index navigation LLM call failed:', navErr);
         }
       }
 
-      const { embedding: queryEmbedding } = await EmbeddingRouter.generateEmbedding(message);
+      const { embedding: queryEmbedding, providerUsed: embeddingProvider } = await EmbeddingRouter.generateEmbedding(message);
+      console.log('[RAG DEBUG] Embedding provider used:', embeddingProvider);
+      console.log('[RAG DEBUG] Embedding vector length:', queryEmbedding.length);
+      console.log('[RAG DEBUG] Embedding sample (first 5 values):', queryEmbedding.slice(0, 5));
+      const nonZeroCount = queryEmbedding.filter(v => v !== 0).length;
+      console.log('[RAG DEBUG] Embedding non-zero values:', nonZeroCount, '/', queryEmbedding.length);
+
       let retrievedChunks: Array<{
         id: string;
         documentId: string;
@@ -217,15 +239,23 @@ Output ONLY the JSON array and nothing else.`;
 
       if (supabase) {
         try {
-          const { data } = await supabase.rpc('match_documents', {
+          console.log('[RAG DEBUG] Calling Supabase match_documents RPC with threshold=0.05, count=8');
+          const { data, error: rpcError } = await supabase.rpc('match_documents', {
             query_embedding: queryEmbedding,
             match_threshold: 0.05,
             match_count: 8,
             p_user_id: userId || null,
           });
 
+          console.log('[RAG DEBUG] Supabase RPC result - data:', data?.length ?? 'null', ', error:', rpcError ?? 'none');
+          if (rpcError) {
+            console.error('[RAG DEBUG] Supabase RPC error details:', JSON.stringify(rpcError));
+          }
+
           if (Array.isArray(data) && data.length > 0) {
-            data.forEach(item => {
+            console.log('[RAG DEBUG] Supabase matched chunks:');
+            data.forEach((item, idx) => {
+              console.log(`  [Chunk ${idx}] similarity=${item.similarity}, docId=${item.document_id}, content preview: "${(item.content || '').slice(0, 100)}..."`);
               retrievedChunks.push({
                 id: item.id,
                 documentId: item.document_id,
@@ -234,12 +264,18 @@ Output ONLY the JSON array and nothing else.`;
                 similarity: item.similarity,
               });
             });
+          } else {
+            console.log('[RAG DEBUG] Supabase RPC returned NO matching chunks');
           }
-        } catch { /* use local store */ }
+        } catch (rpcCatchErr) {
+          console.error('[RAG DEBUG] Supabase RPC call threw exception:', rpcCatchErr);
+        }
       }
 
       const localMatches = localVectorStore.searchSimilarity(queryEmbedding, 0.05, 8, userId, message);
-      localMatches.forEach(m => {
+      console.log('[RAG DEBUG] Local vector store matches:', localMatches.length);
+      localMatches.forEach((m, idx) => {
+        console.log(`  [Local Chunk ${idx}] similarity=${m.similarity}, docId=${m.documentId}, content preview: "${(m.content || '').slice(0, 100)}..."`);
         retrievedChunks.push({
           id: m.id,
           documentId: m.documentId,
@@ -249,6 +285,8 @@ Output ONLY the JSON array and nothing else.`;
         });
       });
 
+      console.log('[RAG DEBUG] Total retrieved chunks BEFORE filtering:', retrievedChunks.length);
+
       if (targetFiles.length > 0) {
         const targetChunks = retrievedChunks.filter(c => (
           targetFiles.some(tf => (
@@ -257,8 +295,12 @@ Output ONLY the JSON array and nothing else.`;
           ))
         ));
 
+        console.log('[RAG DEBUG] After targetFiles filter:', targetChunks.length, 'chunks match target files:', targetFiles);
         if (targetChunks.length > 0) {
           retrievedChunks = targetChunks;
+        } else {
+          console.log('[RAG DEBUG] No chunks matched target files, keeping all chunks');
+          console.log('[RAG DEBUG] Chunk metadata for debugging:', retrievedChunks.map(c => ({ fileName: c.metadata?.fileName, title: c.metadata?.title })));
         }
       }
 
@@ -273,6 +315,7 @@ Output ONLY the JSON array and nothing else.`;
       }
       uniqueChunks.sort((a, b) => b.similarity - a.similarity);
       retrievedChunks = uniqueChunks.slice(0, 5);
+      console.log('[RAG DEBUG] Final unique chunks after dedup + top-5:', retrievedChunks.length);
 
       const citations: SourceCitation[] = retrievedChunks.map((chunk, idx) => ({
         id: chunk.id || `cit-${idx}`,
@@ -284,6 +327,12 @@ Output ONLY the JSON array and nothing else.`;
       }));
 
       if (retrievedChunks.length > 0) {
+        console.log('[RAG DEBUG] ✅ Found chunks! Generating OKF answer with', retrievedChunks.length, 'chunks');
+        retrievedChunks.forEach((c, i) => {
+          console.log(`[RAG DEBUG] Final Chunk ${i}: similarity=${c.similarity}, doc=${c.metadata?.fileName || 'unknown'}`);
+          console.log(`  Content (first 200 chars): "${c.content.slice(0, 200)}..."`);
+        });
+
         const contextText = retrievedChunks.map((c, i) => `[Document: ${c.metadata?.fileName || 'Knowledge Base'}]\n${c.content}`).join('\n\n');
 
         const okfSystemPrompt = `You are Antigravity's Chief Support Specialist and Knowledge Engineer.
@@ -302,7 +351,12 @@ Instructions for OKF Response Generation:
 4. Do NOT guess or hallucinate any facts not mentioned in the context. Do NOT mention internal AI models or vector databases.`;
 
         const { text: rawAnswer, telemetry } = await smartRouter.executeWithFailover(okfSystemPrompt, message);
+        console.log('[RAG DEBUG] LLM raw answer (first 500 chars):', rawAnswer.slice(0, 500));
+        console.log('[RAG DEBUG] LLM telemetry:', { provider: telemetry.provider, model: telemetry.modelUsed, latencyMs: telemetry.latencyMs });
+
         const { formattedAnswer, webReferences } = OpenKnowledgeEngine.formatOpenKnowledgeWiki(rawAnswer, message, citations);
+        console.log('[RAG DEBUG] Formatted answer (first 500 chars):', formattedAnswer.slice(0, 500));
+        console.log('========== [RAG DEBUG] OKF MODE END (SUCCESS) ==========\n');
 
         await logChatAnalytics(message, telemetry.provider, telemetry.modelUsed, telemetry.latencyMs, retrievedChunks.length, 'okf_wiki', knowledgeMode);
 
@@ -321,6 +375,9 @@ Instructions for OKF Response Generation:
           },
         });
       }
+
+      console.log('[RAG DEBUG] ❌ NO CHUNKS RETRIEVED — returning fallback response');
+      console.log('========== [RAG DEBUG] OKF MODE END (NO MATCH) ==========\n');
 
       await logChatAnalytics(message, 'system', 'okf-fallback', 10, 0, 'okf_wiki_no_match', knowledgeMode);
 
@@ -343,7 +400,12 @@ Instructions for OKF Response Generation:
     // =========================================================================
     // MODE 2: STANDARD RAG MODE (Vector Similarity & Keyword Retrieval)
     // =========================================================================
-    const { embedding: queryEmbedding } = await EmbeddingRouter.generateEmbedding(message);
+    console.log('\n========== [RAG DEBUG] STANDARD RAG MODE START ==========');
+    console.log('[RAG DEBUG] User query:', message);
+    const { embedding: queryEmbedding, providerUsed: stdEmbeddingProvider } = await EmbeddingRouter.generateEmbedding(message);
+    console.log('[RAG DEBUG] Embedding provider:', stdEmbeddingProvider);
+    console.log('[RAG DEBUG] Embedding vector length:', queryEmbedding.length);
+    console.log('[RAG DEBUG] Embedding non-zero values:', queryEmbedding.filter(v => v !== 0).length, '/', queryEmbedding.length);
 
     let retrievedChunks: Array<{
       id: string;
@@ -354,8 +416,10 @@ Instructions for OKF Response Generation:
     }> = [];
 
     const supabase = getSupabaseClient();
+    console.log('[RAG DEBUG] Supabase client initialized:', !!supabase);
     if (supabase) {
       try {
+        console.log('[RAG DEBUG] Calling Supabase match_documents RPC...');
         const { data, error } = await supabase.rpc('match_documents', {
           query_embedding: queryEmbedding,
           match_threshold: 0.05,
@@ -363,8 +427,15 @@ Instructions for OKF Response Generation:
           p_user_id: userId || null,
         });
 
+        console.log('[RAG DEBUG] Supabase RPC result - data count:', data?.length ?? 'null', ', error:', error ?? 'none');
+        if (error) {
+          console.error('[RAG DEBUG] Supabase RPC error details:', JSON.stringify(error));
+        }
+
         if (!error && Array.isArray(data) && data.length > 0) {
-          data.forEach(item => {
+          console.log('[RAG DEBUG] Supabase matched chunks:');
+          data.forEach((item, idx) => {
+            console.log(`  [Chunk ${idx}] similarity=${item.similarity}, docId=${item.document_id}, content preview: "${(item.content || '').slice(0, 100)}..."`);
             retrievedChunks.push({
               id: item.id,
               documentId: item.document_id,
@@ -374,17 +445,20 @@ Instructions for OKF Response Generation:
             });
           });
         } else {
+          console.log('[RAG DEBUG] No vector matches, trying keyword ILIKE fallback...');
           // Keyword ILIKE fallback in Supabase
           const keywords = message.toLowerCase().match(/\w+/g) || [];
           const stopWords = ['what', 'how', 'where', 'when', 'tell', 'about', 'your', 'this', 'that', 'with', 'have', 'from'];
           for (const kw of keywords) {
             if (kw.length > 3 && !stopWords.includes(kw)) {
+              console.log('[RAG DEBUG] ILIKE search for keyword:', kw);
               const { data: ilikeData } = await supabase
                 .from('document_chunks')
                 .select('id, document_id, content, metadata')
                 .ilike('content', `%${kw}%`)
                 .limit(5);
 
+              console.log('[RAG DEBUG] ILIKE results for "' + kw + '":', ilikeData?.length ?? 0);
               if (ilikeData && ilikeData.length > 0) {
                 ilikeData.forEach((item, idx) => {
                   retrievedChunks.push({
@@ -401,12 +475,14 @@ Instructions for OKF Response Generation:
           }
         }
       } catch (dbErr) {
-        console.warn('Supabase vector search error, falling back to local vector store:', dbErr);
+        console.error('[RAG DEBUG] Supabase vector search exception:', dbErr);
       }
     }
 
     const localMatches = localVectorStore.searchSimilarity(queryEmbedding, 0.05, 5, userId, message);
-    localMatches.forEach(m => {
+    console.log('[RAG DEBUG] Local vector store matches:', localMatches.length);
+    localMatches.forEach((m, idx) => {
+      console.log(`  [Local Chunk ${idx}] similarity=${m.similarity}, docId=${m.documentId}, content preview: "${(m.content || '').slice(0, 100)}..."`);
       retrievedChunks.push({
         id: m.id,
         documentId: m.documentId,
@@ -415,6 +491,7 @@ Instructions for OKF Response Generation:
         similarity: m.similarity || 0.5,
       });
     });
+    console.log('[RAG DEBUG] Total retrieved chunks (Supabase + local):', retrievedChunks.length);
 
     const seenContent = new Set<string>();
     const uniqueChunks: typeof retrievedChunks = [];
@@ -438,6 +515,12 @@ Instructions for OKF Response Generation:
     }));
 
     if (retrievedChunks.length > 0) {
+      console.log('[RAG DEBUG] ✅ Found chunks! Generating standard RAG answer with', retrievedChunks.length, 'chunks');
+      retrievedChunks.forEach((c, i) => {
+        console.log(`[RAG DEBUG] Final Chunk ${i}: similarity=${c.similarity}, doc=${c.metadata?.fileName || 'unknown'}`);
+        console.log(`  Content (first 200 chars): "${c.content.slice(0, 200)}..."`);
+      });
+
       const contextText = retrievedChunks.map((c, i) => `[Source ${i + 1}: ${c.metadata?.fileName || 'Document'}]\n${c.content}`).join('\n\n');
 
       const systemPrompt = `You are  Senior Customer Support Assistant.
@@ -454,6 +537,9 @@ Instructions for Answer Generation:
 5. Do NOT mention internal database queries, AI model names, or vector thresholds.`;
 
       const { text: rawAnswer, telemetry } = await smartRouter.executeWithFailover(systemPrompt, message);
+      console.log('[RAG DEBUG] LLM raw answer (first 500 chars):', rawAnswer.slice(0, 500));
+      console.log('[RAG DEBUG] LLM telemetry:', { provider: telemetry.provider, model: telemetry.modelUsed, latencyMs: telemetry.latencyMs });
+      console.log('========== [RAG DEBUG] STANDARD RAG MODE END (SUCCESS) ==========\n');
 
       await logChatAnalytics(message, telemetry.provider, telemetry.modelUsed, telemetry.latencyMs, retrievedChunks.length, 'document_rag', knowledgeMode);
 
@@ -473,6 +559,8 @@ Instructions for Answer Generation:
       });
     }
 
+    console.log('[RAG DEBUG] ❌ NO CHUNKS RETRIEVED in standard RAG — returning fallback');
+    console.log('========== [RAG DEBUG] STANDARD RAG MODE END (NO MATCH) ==========\n');
     await logChatAnalytics(message, 'system', 'fallback', 10, 0, 'no_match', knowledgeMode);
 
     return NextResponse.json({
